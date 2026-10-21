@@ -1,0 +1,443 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file           : main.c
+  * @brief          : Main program body
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2025 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+/* Includes ------------------------------------------------------------------*/
+#include "main.h"
+#include "crc.h"
+#include "flash.h"
+#include "gpdma.h"
+#include "icache.h"
+#include "memorymap.h"
+#include "rtc.h"
+#include "tim.h"
+#include "usart.h"
+#include "gpio.h"
+
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+#include "stm32u5xx_hal.h"
+#include <stdint.h>
+/* USER CODE END Includes */
+
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN PTD */
+typedef void (*app_entry_t)(void);
+/* USER CODE END PTD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
+
+/* USER CODE BEGIN PV */
+uint8_t HW_Version;
+uint32_t boot_timeout = 0;
+/* USER CODE END PV */
+
+/* Private function prototypes -----------------------------------------------*/
+void SystemClock_Config(void);
+static void MPU_Config(void);
+static void MX_NVIC_Init(void);
+/* USER CODE BEGIN PFP */
+
+/* USER CODE END PFP */
+
+/* Private user code ---------------------------------------------------------*/
+/* USER CODE BEGIN 0 */
+void write_clear_bkup_sram(void){
+	*(uint32_t*)(SRAM_BKUP_REGISTER) = SRAM_BKUP_REGISTER_CLEAR;
+}
+
+/* USER CODE END 0 */
+
+/**
+  * @brief  The application entry point.
+  * @retval int
+  */
+int main(void)
+{
+
+  /* USER CODE BEGIN 1 */
+	SCB->VTOR = 0x08000000;
+	__enable_irq();
+  /* USER CODE END 1 */
+
+  /* MCU Configuration--------------------------------------------------------*/
+
+  /* MPU Configuration--------------------------------------------------------*/
+  MPU_Config();
+
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+  HAL_Init();
+
+  /* USER CODE BEGIN Init */
+
+  /* USER CODE END Init */
+
+  /* Configure the system clock */
+  SystemClock_Config();
+
+  /* USER CODE BEGIN SysInit */
+
+  /* USER CODE END SysInit */
+
+  /* Initialize all configured peripherals */
+  MX_GPDMA1_Init();
+  MX_GPIO_Init();
+  MX_ICACHE_Init();
+  MX_TIM2_Init();
+  MX_TIM4_Init();
+  MX_RTC_Init();
+  MX_USART6_UART_Init();
+  MX_USART3_UART_Init();
+  MX_FLASH_Init();
+  MX_CRC_Init();
+
+  /* Initialize interrupts */
+  MX_NVIC_Init();
+  /* USER CODE BEGIN 2 */
+	HAL_GPIO_WritePin(LED_R_GPIO_Port, LED_R_Pin, GPIO_PIN_SET);//Turn off RGB led
+	HAL_GPIO_WritePin(LED_G_GPIO_Port, LED_G_Pin, GPIO_PIN_SET);//Turn off RGB led
+	HAL_GPIO_WritePin(LED_B_GPIO_Port, LED_B_Pin, GPIO_PIN_SET); //Turn off RGB led
+  //HAL_Delay(1000);
+  //*(uint32_t*)(SRAM_BKUP_REGISTER+4) = UPDATE_FW_MODE;
+  Set_Boot_Timer();
+  Update_Cash_Mem();
+  uint32_t bkup_sram_boot_reason = *(uint32_t*)SRAM_BKUP_REGISTER;
+  uint32_t stop_addr = APP_ADDRESS + Get_Len_File();
+  uint32_t get_crc = Get_CRC_File();
+  uint32_t calc_crc = FlashCRC_Calc(APP_ADDRESS , stop_addr);
+  bool crc_valid = (calc_crc != get_crc) ? false : true;
+  bool sram_flag = (bkup_sram_boot_reason != UPDATE_FW_MODE) ? true : false;
+  if (sram_flag && crc_valid){
+	  JumpToApp();
+  }
+  HAL_GPIO_WritePin(SX_LED_RX_GPIO_Port, SX_LED_RX_Pin, GPIO_PIN_SET);
+  read_hw_version();
+  bool start_prog_flag = true; //false;
+  S_UART_MESSAGE msg = { 0 };
+  S_UART_MESSAGE reply = { 0 };
+  /* USER CODE END 2 */
+
+  /* Infinite loop */
+  /* USER CODE BEGIN WHILE */
+
+	volatile const uint32_t *p = (volatile const uint32_t *) 0x08200000UL;
+	uint32_t before, after = 0;
+  while (1)
+  {
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
+	  static uint32_t flash_app_address = APP_ADDRESS;
+	  uint8_t RxLen = UART_GetMessage((uint8_t*) &msg, sizeof(msg));
+	    if ((RxLen != RX_EMPTY) && Validate_UART(&msg, RxLen)) {
+	    	Set_Boot_Timer();
+			switch (msg.header.opcode) {
+				case UART_OPCODE_STATUS: {
+					UART_Reply_Status(&msg, &reply);
+					break;
+				}
+				case UART_OPCODE_START_PROG:{
+					uint32_t calc_crc = 0;
+					HAL_GPIO_WritePin(LED_B_GPIO_Port, LED_B_Pin, GPIO_PIN_RESET);
+					start_prog_flag = true;
+					if (FLASH_MassErase(FLASH_APP_BANK) != HAL_OK){
+						UART_Reply_error(&msg, &reply);
+					}else{
+						UART_Reply_Start_Prog(&msg,&reply);
+						calc_crc = FlashCRC_Calc(APP_ADDRESS, stop_addr);
+					}
+					before = * p;
+					HAL_Delay(20);
+					break;
+				}
+				case UART_OPCODE_WRITE_BUFFER:{
+					if (!start_prog_flag){ //Erase before Writing
+						UART_Reply_error(&msg, &reply);
+					}
+					if (flash_app_address > 0x08400000 || flash_app_address < 0x08200000)
+						UART_Reply_error(&msg, &reply);
+					Flash_Write(flash_app_address,(uint64_t*)&msg.start_wr_buff_req.buffer,NUM_OF_QUADWORDS(FLASH_TOTAL_BUFFER_SIZE));
+					flash_app_address+=FLASH_TOTAL_BUFFER_SIZE;
+					UART_Reply_Write_Buffer(&msg, &reply);
+					break;
+				}
+				case UART_OPCODE_HEADER_FILE:{
+					volatile const uint32_t *p = (volatile const uint32_t *) 0x08200000UL;
+					after = * p;
+					start_prog_flag = false;
+					HEADER_FILE header_file = {0};
+					header_file.crc = msg.op_hdr_file_req.crc_file;
+					header_file.len = PAGES_TO_BYTE(LEN_TO_CRC_CHECK);//msg.op_hdr_file_req.file_len;
+					Clear_Header_File();
+					Flash_Write(HEADER_FILE_ADDRESS,(uint64_t*)&header_file,FLASH_QUADWORD_HEADER_NUM);
+					flash_app_address = APP_ADDRESS;
+					uint32_t stop_addr = APP_ADDRESS + header_file.len;
+					uint32_t calc_crc = FlashCRC_Calc(APP_ADDRESS, 0x83fe000);
+//					uint32_t calc_crc = FlashCRC_Calc(APP_ADDRESS, stop_addr);
+					if (header_file.crc == calc_crc){
+						UART_Reply_Header_File(&msg, &reply);
+						HAL_Delay(100);
+						JumpToApp();
+					}
+					UART_Reply_error(&msg, &reply);
+					break;
+				}
+				case UART_OPCODE_RESET:
+					{
+						write_clear_bkup_sram();
+						UART_Reply_Start_Prog(&msg,&reply);
+						HAL_Delay(1000);
+						HAL_NVIC_SystemReset();
+						break;
+					}
+				default:
+					UART_Reply_error(&msg, &reply);
+					break;
+				}
+	    	}
+	    Boot_Timeout();
+	    }
+
+  /* USER CODE END 3 */
+}
+
+/**
+  * @brief System Clock Configuration
+  * @retval None
+  */
+void SystemClock_Config(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+  /** Configure the main internal regulator output voltage
+  */
+  if (HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSI|RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
+  RCC_OscInitStruct.LSIDiv = RCC_LSI_DIV128;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLMBOOST = RCC_PLLMBOOST_DIV1;
+  RCC_OscInitStruct.PLL.PLLM = 1;
+  RCC_OscInitStruct.PLL.PLLN = 13;
+  RCC_OscInitStruct.PLL.PLLP = 8;
+  RCC_OscInitStruct.PLL.PLLQ = 2;
+  RCC_OscInitStruct.PLL.PLLR = 1;
+  RCC_OscInitStruct.PLL.PLLRGE = RCC_PLLVCIRANGE_1;
+  RCC_OscInitStruct.PLL.PLLFRACN = 0;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2
+                              |RCC_CLOCKTYPE_PCLK3;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.APB3CLKDivider = RCC_HCLK_DIV1;
+
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
+  * @brief NVIC Configuration.
+  * @retval None
+  */
+static void MX_NVIC_Init(void)
+{
+  /* TIM4_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(TIM4_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(TIM4_IRQn);
+  /* GPDMA1_Channel0_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(GPDMA1_Channel0_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(GPDMA1_Channel0_IRQn);
+}
+
+/* USER CODE BEGIN 4 */
+void Set_Boot_Timer(void){
+	boot_timeout = HAL_GetTick();
+}
+
+void Boot_Timeout(){
+	if (HAL_GetTick() - boot_timeout > BOOT_TIMEOUT) {
+		write_clear_bkup_sram();
+		HAL_NVIC_SystemReset();
+	}
+}
+
+void JumpToApp(void){
+	uint32_t app_msp = *(volatile uint32_t *)(APP_ADDRESS + 0X00); //Stack pointer
+	uint32_t app_reset_pc = *(volatile uint32_t *)(APP_ADDRESS + 0X04); //Reset Handler
+	app_entry_t app_reset_handler = (app_entry_t)app_reset_pc;
+	__disable_irq();
+	SysTick->CTRL = 0;
+	SysTick->LOAD = 0;
+	SysTick->VAL  = 0;
+	SCB->VTOR = APP_ADDRESS; //update table vector
+	__set_MSP(app_msp); //Upload the app
+	HAL_DeInit();
+	Update_Cash_Mem();
+	app_reset_handler(); //jump to app
+	while(1);
+}
+
+void Update_Cash_Mem(void){
+//	ICACHE->CR &= ~ICACHE_CR_EN;
+//		ICACHE->CR |= ICACHE_CR_CACHEINV;
+//		ICACHE->CR |= ICACHE_CR_EN;
+	__DSB();
+	__ISB();
+
+	while((ICACHE->SR & ICACHE_SR_BUSYF) != 0U);
+	ICACHE->FCR = ICACHE_FCR_CBSYENDF;
+
+	ICACHE->CR |= ICACHE_CR_CACHEINV;
+
+	while((ICACHE->SR & ICACHE_SR_BSYENDF) != 0U);
+	ICACHE->FCR = ICACHE_FCR_CBSYENDF;
+
+	__DSB();
+		__ISB();
+}
+
+VER_PIN RevC1[] = {
+		{GPIOE, GPIO_PIN_1},	// VER1_0
+		{GPIOE, GPIO_PIN_2},	// VER1_1
+		{GPIOE, GPIO_PIN_3},	// VER1_2
+};
+
+VER_PIN RevC2[] = {
+		{GPIOC, GPIO_PIN_6},	// VER2_0
+		{GPIOC, GPIO_PIN_7},	// VER2_1
+		{GPIOC, GPIO_PIN_8},	// VER2_2
+};
+void read_hw_version(void){
+	HW_Version = 0;
+	HW_Version |= READ_HW_PIN(RevC1[VER_R0],VER_R0) | READ_HW_PIN(RevC2[VER_R0],VER_R0);
+	HW_Version |= READ_HW_PIN(RevC1[VER_R1],VER_R1) | READ_HW_PIN(RevC2[VER_R1],VER_R1);
+	HW_Version |= READ_HW_PIN(RevC1[VER_R2],VER_R2) | READ_HW_PIN(RevC2[VER_R2],VER_R2);
+}
+/* USER CODE END 4 */
+
+ /* MPU Configuration */
+
+void MPU_Config(void)
+{
+  MPU_Region_InitTypeDef MPU_InitStruct = {0};
+  MPU_Attributes_InitTypeDef MPU_AttributesInit = {0};
+
+  /* Disables the MPU */
+  HAL_MPU_Disable();
+
+  /** Initializes and configures the Region 0 and the memory to be protected
+  */
+  MPU_InitStruct.Enable = MPU_REGION_ENABLE;
+  MPU_InitStruct.Number = MPU_REGION_NUMBER0;
+  MPU_InitStruct.BaseAddress = 0x08000000;
+  MPU_InitStruct.LimitAddress = 0x081FDFFF;
+  MPU_InitStruct.AttributesIndex = MPU_ATTRIBUTES_NUMBER0;
+  MPU_InitStruct.AccessPermission = MPU_REGION_PRIV_RO;
+  MPU_InitStruct.DisableExec = MPU_INSTRUCTION_ACCESS_ENABLE;
+  MPU_InitStruct.IsShareable = MPU_ACCESS_NOT_SHAREABLE;
+
+  HAL_MPU_ConfigRegion(&MPU_InitStruct);
+
+  /** Initializes and configures the Region 1 and the memory to be protected
+  */
+  MPU_InitStruct.Number = MPU_REGION_NUMBER1;
+  MPU_InitStruct.BaseAddress = 0x20000000;
+  MPU_InitStruct.LimitAddress = 0x2026FFFF;
+  MPU_InitStruct.AttributesIndex = MPU_ATTRIBUTES_NUMBER1;
+  MPU_InitStruct.AccessPermission = MPU_REGION_PRIV_RW;
+
+  HAL_MPU_ConfigRegion(&MPU_InitStruct);
+
+  /** Initializes and configures the Attribute 0 and the memory to be protected
+  */
+  MPU_AttributesInit.Number = MPU_ATTRIBUTES_NUMBER0;
+  MPU_AttributesInit.Attributes = INNER_OUTER(MPU_NOT_CACHEABLE);
+
+  HAL_MPU_ConfigMemoryAttributes(&MPU_AttributesInit);
+
+  /** Initializes and configures the Attribute 1 and the memory to be protected
+  */
+  MPU_AttributesInit.Number = MPU_ATTRIBUTES_NUMBER1;
+  MPU_AttributesInit.Attributes = INNER_OUTER(MPU_WRITE_BACK|MPU_TRANSIENT
+                              |MPU_RW_ALLOCATE);
+
+  HAL_MPU_ConfigMemoryAttributes(&MPU_AttributesInit);
+  /* Enables the MPU */
+  HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
+
+}
+
+/**
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
+void Error_Handler(void)
+{
+  /* USER CODE BEGIN Error_Handler_Debug */
+  /* User can add his own implementation to report the HAL error return state */
+  __disable_irq();
+  while (1)
+  {
+  }
+  /* USER CODE END Error_Handler_Debug */
+}
+
+#ifdef  USE_FULL_ASSERT
+/**
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
+void assert_failed(uint8_t *file, uint32_t line)
+{
+  /* USER CODE BEGIN 6 */
+  /* User can add his own implementation to report the file name and line number,
+     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+  /* USER CODE END 6 */
+}
+#endif /* USE_FULL_ASSERT */
