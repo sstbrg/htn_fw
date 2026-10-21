@@ -34,6 +34,12 @@
   .callout { background:var(--soft); border-left:3px solid var(--accent); padding:9px 12px; border-radius:0 5px 5px 0; margin:10px 0; font-size:9.5px; }
   .callout.warn { border-left-color:var(--blocker); background:var(--blocker-bg); }
   .callout.ok { border-left-color:var(--optional); background:var(--optional-bg); }
+  .fw { background:#eef3ff; border:1px solid #d6e0fb; border-left:3px solid var(--accent); padding:7px 11px; border-radius:0 5px 5px 0; margin:8px 0 12px; font-size:9.3px; break-inside:avoid; }
+  .fw.part { background:var(--important-bg); border-color:#f3dfb8; border-left-color:var(--important); }
+  .fw.no { background:var(--none-bg); border-color:var(--line); border-left-color:var(--none); }
+  .fw .fwh { font-size:8px; letter-spacing:1.4px; text-transform:uppercase; color:var(--accent); font-weight:700; margin-bottom:3px; }
+  .fw.part .fwh { color:var(--important); } .fw.no .fwh { color:var(--none); }
+  .fw p { margin:3px 0; } .fw ul { margin:3px 0; padding-left:16px; }
   table { width:100%; border-collapse:collapse; margin:8px 0 4px; font-size:9px; }
   thead th { background:var(--ink); color:#fff; text-align:left; padding:5px 7px; font-weight:600; font-size:8.4px; letter-spacing:.4px; text-transform:uppercase; }
   tbody td { padding:5px 7px; border-bottom:1px solid var(--line); vertical-align:top; }
@@ -98,6 +104,8 @@
   <a href="#s5">§5 &nbsp;Robustness / verify</a> <span class="pill optional">optional</span><br>
   <a href="#s7">§7 &nbsp;LDE algorithm tuning (weak-signal)</a> <span class="pill optional">experiment</span><br>
   <a href="#s8">§8 &nbsp;Multi-station UWB backoff (two systems, one tag)</a> <span class="pill blocker">blocker</span><br>
+  <a href="#s9">§9 &nbsp;Link adaptation, CIR, timing, calibration (9L)</a> <span class="pill important">important</span><br>
+  <a href="#s10">§10 &nbsp;Bugs found outside the plan</a> <span class="pill blocker">fixed</span><br>
   <a href="#s6">§6 &nbsp;Bench checklist + at-a-glance</a>
 </div>
 
@@ -124,6 +132,11 @@ clockOffsetRatio = dwt_readcarrierintegrator()
         * (<span class="add">freqOffsetMultiplier</span> * <span class="m">HERTZ_TO_PPM_MULTIPLIER_CHAN_2</span> / <span class="s">1.0e6</span>);</pre>
 <p class="codecap">Basis: the two header macros differ only by divisor (1024 vs 8192); UM §7.2.40.11 states <code>N<sub>samples</sub> = 8192 for 110 kb/s, 1024 otherwise</code>. <code>config</code> is the file-static <code>dwt_config_t</code> from the header (in scope). 850k/6.8M correctly fall through to the 1024 macro — which is why 850k works today.</p>
 
+<div class="fw"><div class="fwh">Firmware answer · anc3.2.0 / tag3.2.0 · <span class="fws">Done</span></div>
+<p><b>Changed:</b> nothing new; already in the tree. <code>dwRange()</code> picks <code>FREQ_OFFSET_MULTIPLIER_110KB</code> when <code>config.dataRate == DWT_BR_110K</code>.</p>
+<p><b>Verified 2026-10-22:</b> the carrier-integrator estimate is stable to ±0.01&nbsp;ppm per pair (tag–anchor offsets measured −1.7 … +5.6&nbsp;ppm). Anchors with opposite offsets agree on range, so the multiplier and the sign are right. The uncorrected error would be 0.75&nbsp;m per ppm at the 5&nbsp;ms reply delay; the residual is under 1&nbsp;cm.</p>
+</div>
+
 <h3>1B &nbsp;<span class="pill blocker">blocker</span>&nbsp; Reject non-physical ToF <span class="where">— anc/src/dw1000.cpp:309–312 (you already removed abs())</span></h3>
 <pre><span class="c">/* current (after your edit): negative tof now propagates as negative distance */</span>
 dwmInfo.tof = ((rtd_init - rtd_resp) / <span class="s">2.0</span>) * <span class="m">DWT_TIME_UNITS</span>;
@@ -142,6 +155,10 @@ dwmInfo.dw_ready = <span class="m">VALID_DATA</span>;
 <span class="add">}</span></pre>
 <p class="codecap">At 110k the round-trip sits closer to the 32-bit timestamp wraparound ceiling (~67 ms). Once 1A is correct, negatives are rare glitches — reject them rather than fold to a fake short range (or, minimal: just restore <code>abs()</code>).</p>
 
+<div class="fw"><div class="fwh">Firmware answer · anc3.2.0 / tag3.2.0 · <span class="fws">Done</span></div>
+<p><b>Changed:</b> already in the tree. A negative ToF sets <code>DW_NO_VALID_DATA</code> and is not reported. Since 9F it also counts as "no usable range" and ends a repeat round.</p>
+</div>
+
 <h3>1C–1H &nbsp;<span class="pill blocker">blocker</span>&nbsp; Config + timeout constants <span class="where">— both files, apply symmetrically</span></h3>
 <table class="avoid-break">
   <thead><tr><th style="width:30px">#</th><th style="width:150px">Location</th><th>Current</th><th>Change to</th></tr></thead>
@@ -156,6 +173,12 @@ dwmInfo.dw_ready = <span class="m">VALID_DATA</span>;
 </table>
 <p class="note"><b>Auto-handled by <code>dwt_configure()</code> — no code:</b> <code>SYS_CFG_RXM110K</code>, <code>LDE_REPC&divide;8</code>, <code>DRX_TUNE0b</code>, <code>DRX_TUNE1b_110K</code>, and <code>DRX_TUNE2</code> (indexed by PRF×PAC — picks up PAC64 automatically). &nbsp;<b>Optional:</b> for the more-robust Decawave 64-symbol SFD set <code>nsSFD</code> from <code>0</code>→<code>1</code> at anc/inc/dw1000.h:125 and tag/src/dw1000.cpp:46 (the author's commented 2048 block uses nsSFD=1) — must match on both ends (UM Table 21).</p>
 
+<div class="fw"><div class="fwh">Firmware answer · anc3.2.0 / tag3.2.0 · <span class="fws">Done</span></div>
+<p><b>Changed:</b> already in the tree, on both ends: 110&nbsp;kbps, PLEN&nbsp;2048, PAC64, SFD timeout 2049, <code>RESP_RX_TIMEOUT_UUS 25000</code>. The optional Decawave 64-symbol SFD (<code>nsSFD = 1</code>) is taken on both.</p>
+<p><b>Verified 2026-10-22:</b> a register dump of all anchors, the Rev C tag and the Rev D tag is identical: <code>SYS_CFG</code> RXM110K, <code>CHAN_CTRL 0x4A7A0022</code> (ch&nbsp;2, PRF&nbsp;64, code&nbsp;9), PE 2048 in <code>TX_FCTRL</code>, <code>DRX_SFDTOC 0x0801</code>, <code>DRX_TUNE*</code>, <code>RX_FWTO 0x61A8</code>.</p>
+<p><b>Left as is — 1H:</b> <code>TIMEOUT_PACS</code> is defined but only applied after deep sleep (<code>dw_PostSleep</code>). The shipping <code>WITHOUT_WAKEUP</code> tag never sleeps, so it runs with no preamble-detect timeout and the 25&nbsp;ms frame-wait timeout governs. That is harmless: the receiver keeps hunting for the whole wait, which is what long range wants.</p>
+</div>
+
 <!-- ====================== SECTION 2 — TX-1 ====================== -->
 <h2 id="s2"><span class="num">§2</span> &nbsp;TX-1 errata — force TX clock before delayed transmit</h2>
 <h3>2A &nbsp;<span class="pill important">important</span>&nbsp; Enable TX clock before each delayed <code>dwt_starttx</code> <span class="where">— tag/src/dw1000.cpp:241 &amp; anc/src/dw1000.cpp:411</span></h3>
@@ -167,6 +190,10 @@ ret = dwt_starttx(<span class="m">DWT_START_TX_DELAYED</span>);
 <span class="add">    dwt_read8bitoffsetreg(</span><span class="m">PMSC_ID</span><span class="add">, </span><span class="m">PMSC_CTRL0_OFFSET</span><span class="add">) | </span><span class="s">0x20</span><span class="add">);  </span><span class="c">// TXCLKS = 125MHz</span>
 ret = dwt_starttx(<span class="m">DWT_START_TX_DELAYED</span>);</pre>
 <p class="codecap">Errata §3.1.3 (verbatim): <i>"If the TX clock is enabled (PMSC_CTRL0 bits 5,4 set to 1,0 - force TX clock on) before the delayed TX command is issued then the problem does not happen."</i> The stock <code>dwt_starttx()</code> does not do this — it is the wrapper's job and is currently absent. A silently-failed delayed TX means the responder never replies → lost exchange; costs frames at the range edge where you can least afford them. Affects both SS-TWR response transmissions.</p>
+
+<div class="fw"><div class="fwh">Firmware answer · anc3.2.0 / tag3.2.0 · <span class="fws">Done</span></div>
+<p><b>Changed:</b> already in the tree. <code>PMSC_CTRL0 |= 0x20</code> (force TX clock) runs right before every delayed <code>dwt_starttx</code>: the tag's response in <code>dwRange()</code> and the anchor's imposter response in <code>dwTagMode()</code>.</p>
+</div>
 
 <!-- ====================== SECTION 3 — Rev-D RX deafness ====================== -->
 <h2 id="s3"><span class="num">§3</span> &nbsp;Rev-D receive deafness — enable GPIO clocks for the external LNA</h2>
@@ -184,13 +211,33 @@ ret = dwt_starttx(<span class="m">DWT_START_TX_DELAYED</span>);</pre>
 <p class="codecap">One line, both files. APS004 §2: GPIO6/EXTRXE <i>"goes high when the DW1000 is in receive mode"</i> and (reference schematic) drives the RX-path RF switch into the LNA. This fix is curative <b>only if Rev-D's LNA is gated by EXTRXE</b> — confirm with §6 before concluding it is firmware-fixable vs a passive RX-front-end (matching/NF) hardware deficit.</p>
 <p class="note"><b>Honest caveat:</b> that an un-clocked <code>GPIO_MODE</code> write <i>silently</i> fails is documented in the UM but not independently re-confirmed by us; treat §3 as a high-probability hypothesis to verify on the bench (§6), not a settled fact. TX works at 2 km because the TX external-PA control (EXTPA/EXTTXE) is driven by the digital TX sequencer path, which is why the failure is RX-only.</p>
 
+<div class="fw"><div class="fwh">Firmware answer · anc3.2.0 / tag3.2.0 · <span class="fws">Done</span></div>
+<p><b>Changed:</b> already in the tree. <code>dwt_enablegpioclocks()</code> runs right after <code>dwt_setlnapamode()</code> in <code>dwConfig()</code> on both ends.</p>
+<p><b>Verified 2026-10-22 (the §6 register check):</b> on Rev C anchors, the Rev C tag and the Rev D tag, <code>GPIO_MODE = 0xDE055400</code> (MSGP6 bits 19:18 = <b>01</b> = EXTRXE) and <code>PMSC_CTRL0 = 0xF0B70200</code> (GPCE and GPRN set). The LNA control is configured. The 400&nbsp;m Rev D receive test is a field test and was not repeated here.</p>
+</div>
+
 <!-- ====================== SECTION 4 — link budget ====================== -->
 <h2 id="s4"><span class="num">§4</span> &nbsp;Long-range link-budget hardening</h2>
 <h3>4A &nbsp;<span class="pill important">important</span>&nbsp; TX power temperature compensation <span class="where">— dwConfig, anc/src/dw1000.cpp:80–106 &amp; tag/src/dw1000.cpp:102–136</span></h3>
 <p>TX power is set once at boot via <code>dwt_configuretxrf()</code>; <code>dwt_readtempvbat()</code> / <code>dwt_calcpowertempadj()</code> are never called. APS023 Pt&nbsp;1 §8.2: channel-2 TX power falls <b>~0.035 dB/&deg;C</b> → a &minus;10&nbsp;&deg;C→+30&nbsp;&deg;C outdoor swing ≈ <b>1.4 dB</b> of lost EIRP, straight off the long-range budget. <b>Fix:</b> periodically (post-wake / on temperature delta) read chip temperature and re-apply temperature-compensated power before TX.</p>
 
+<div class="fw no"><div class="fwh">Firmware answer · anc3.2.0 / tag3.2.0 · <span class="fws">Not done</span></div>
+<p><b>Omitted:</b> temperature compensation of TX power.</p>
+<p><b>Why:</b> Rev D already transmits at the register maximum (<code>TX_POWER 0x1F1F1F1F</code>, 30.5&nbsp;dB gain), and compensation can only add gain, so there is no headroom to use. Rev C runs at <code>0x40404040</code> (10&nbsp;dB) and has headroom. But raising it in the cold is only legal against a per-board power calibration to the −41.3&nbsp;dBm/MHz mask (APS023 Pt&nbsp;1), and none exists yet. Do that calibration first, then add the <code>dwt_readtempvbat()</code> loop on top.</p>
+</div>
+
 <h3>4B &nbsp;<span class="pill important">important</span>&nbsp; Per-device antenna-delay calibration <span class="where">— anc/inc/dw1000.h:149–150 ; tag/Inc/dw1000.h:92–93</span></h3>
 <p>Antenna delays are hardcoded (anc 16550/16500; tag 16500/16500). APS014: uncalibrated antenna delay ≈ <b>30 cm 3&sigma;</b> error, drifting <b>2.15 mm/&deg;C</b>. This is a <i>constant</i> offset (doesn't grow with range, won't stop you reaching distance) but it is your absolute-accuracy floor — calibrate per unit if sub-30 cm accuracy matters.</p>
+
+<div class="fw"><div class="fwh">Firmware answer · anc3.2.0 / tag3.2.0 · <span class="fws">Done</span></div>
+<p><b>Changed:</b></p>
+<ul>
+<li>Per-device antenna delays live in flash, self-id page slots 1 (TX) and 2 (RX); opcode 20 sets and reads them (from anc3.1.5/tag3.1.5). <code>SET_ID</code> keeps them.</li>
+<li><b>Bug fixed (tag3.2.0, anc3.2.0):</b> the tag's delayed response (and the anchor's imposter response) computed its TX timestamp with the compile-time <code>TX_ANT_DLY</code>, not the delay loaded from flash. A calibrated <i>TX</i> delay therefore had no effect on the range; only the RX delay did. The timestamp now uses the applied value. Bench check: +100 units of tag TX delay → −24.0&nbsp;cm (expected −23.5&nbsp;cm = 100 × 15.65&nbsp;ps × c / 2). <b>Any tag calibrated before tag3.2.0 must be recalibrated.</b></li>
+<li>New: DW1000 crystal trim in flash (slot 3, opcode 23 <code>XTAL_TRIM</code>, applied after <code>dwt_initialise</code>). On the Rev D board its whole range moves the crystal only ~0.3&nbsp;ppm, so it was left at the default; the carrier integrator already corrects the offset.</li>
+</ul>
+<p><b>Not done:</b> the calibration itself, and pushing values over the air. The routine for the analyzer is <b>9L</b>.</p>
+</div>
 
 <!-- ====================== SECTION 5 — robustness ====================== -->
 <h2 id="s5"><span class="num">§5</span> &nbsp;Robustness / verify (lower priority)</h2>
@@ -213,6 +260,17 @@ The partial frame is dropped (the host times out and resends). Same for the tag'
     <tr><td class="id">5D</td><td class="line">anc/src/dw1000.cpp:110–115</td><td>LDE noise-threshold / peak-multiplier tuning for weak-signal first-path recovery — see <b>§7</b> (the <code>NEW_NTM</code> block is the hook, but its current value is a no-op; §7 gives the real values).</td><td><span class="pill optional">→ §7</span></td></tr>
   </tbody>
 </table>
+
+<div class="fw"><div class="fwh">Firmware answer · anc3.2.0 / tag3.2.0 · <span class="fws">Done</span></div>
+<ul>
+<li><b>5A:</b> both ends clear <code>ALL_RX_TO | ALL_RX_ERR | ALL_RX_GOOD</code> before <code>dwt_rxreset()</code>.</li>
+<li><b>5B:</b> the anchor accepts responses by <code>&lt;=</code> (legacy 20 or extended 24 bytes). The tag accepts exactly the legacy 12-byte or extended 17-byte poll. The legacy sizes are locked by <code>static_assert</code>, because older firmware checks them.</li>
+<li><b>5C → 8E:</b> done.</li>
+<li><b>5D → §7 / 9G:</b> done on the anchor.</li>
+<li><b>5E:</b> <code>HAL_UART_ErrorCallback</code> re-arms the DMA receive on both ends (from anc3.1.5/tag3.1.5).</li>
+</ul>
+<p><b>Also, from the 2026-10-22 bug list</b> (details in §10): <code>Error_Handler</code> resets instead of hanging; LoRa TX/RX recovers from a lost interrupt; <code>rxError</code> no longer latches; <code>no_uwb</code> no longer latches, with a bounded DW1000 re-init; backoff deadlines are wrap-safe.</p>
+</div>
 
 <!-- ====================== SECTION 7 — LDE tuning ====================== -->
 <h2 id="s7"><span class="num">§7</span> &nbsp;LDE algorithm tuning — weak-signal first-path detection</h2>
@@ -241,6 +299,16 @@ dwt_write8bitoffsetreg(<span class="m">LDE_IF_ID</span>, <span class="m">LDE_CFG
 <p class="codecap"><b>Sweep, don't slam:</b> <code>0x6D</code> (now) → <code>0x6C</code> (default) → <code>0x07</code> (NLOS). Measure first-path detection rate and range scatter at 400&nbsp;m / long range at each. Too low a threshold makes LDE <b>lock onto noise</b> → false detects and garbage ranges → <i>more</i> effective loss. APS006 Part 2/3 is the tuning reference.</p>
 <p class="note"><b>Placement:</b> must be written <i>after</i> <code>dwt_configure()</code> (which sets the LOS default 0x6D), on the anchor that is the existing <code>NEW_NTM</code> location. Apply identically on Tag and Anchor. &nbsp;<b>Live-tunable from rf_analyzer ✓</b> — <code>LDE_CFG1</code> is at reg 0x2E, sub-offset 0x0806. The firmware WRITE opcode (14) carries a <b>16-bit</b> reg_offset (same struct as the READ opcode, whose ACC_MEM reads already use offsets &gt;0xFF in production), so 0x0806 is reachable. <code>commands.UWB_write8bit_raw</code> now sends the offset as little-endian [lo,hi]; the analyzer Configuration tab has a "Live LDE tuning" control to sweep 0x6D/0x6C/0x07 in the field without re-flashing. (Earlier note said this needed a flash — corrected: only LDE_REPC math is driver-side; the byte itself is pokeable live, but resets to 0x6D on any dwConfig() re-run.)</p>
 <p class="note"><b>Related, NOT a tuning knob:</b> <code>LDE_REPC</code> (reg 0x2E:2804) must be divided by 8 at 110&nbsp;kbps — <code>dwt_configure()</code> does this automatically (<code>reg16 &gt;&gt;= 3</code> for <code>DWT_BR_110K</code>). Leave it alone; do not hand-write it.</p>
+
+<div class="fw"><div class="fwh">Firmware answer · anc3.2.0 / tag3.2.0 · <span class="fws">Done</span></div>
+<p><b>Changed (anchor):</b></p>
+<ul>
+<li><code>LDE_CFG1</code> is writable live with opcode 14 and survives a <code>dwConfig()</code> re-run (<code>lde_cfg1</code>, anc3.1.5).</li>
+<li>Automatic switching between the LOS value and <code>0x67</code> is 9G. It acts only when the signal is strong (&gt;&nbsp;−90&nbsp;dBm), because at weak signal a lower threshold locks onto noise — exactly the risk named above.</li>
+</ul>
+<p><b>Changed (tag, over UWB):</b> the anchor sends its preset in every extended poll (<code>ctrl</code> bit&nbsp;4), and the tag applies it for its next reception. The channel is reciprocal, so the anchor's decision also holds for the tag. The tag reports the preset in force (response flag <code>0x08</code>; STATUS link flag <code>0x20</code>). Back to LOS (<code>0x6D</code>) on a legacy poll, with two stations, or after 1&nbsp;s without extended polls. Bench: <code>0x6D</code> → <code>0x67</code> with 9G on, → <code>0x6D</code> when 9G is switched off, and by itself 1.5&nbsp;s after polls stop; 95–97&nbsp;% valid ranges throughout.</p>
+<p><b>Not used:</b> <code>0x07</code> (PMULT&nbsp;0). 9G specifies <code>0x67</code> as the NLOS preset; <code>0x07</code> stays available by hand through opcode 14 for the sweep.</p>
+</div>
 
 <!-- ====================== SECTION 8 — multi-station backoff ====================== -->
 <h2 id="s8"><span class="num">§8</span> &nbsp;Multi-station coexistence — UWB backoff (two anchor systems, one tag)</h2>
@@ -311,6 +379,11 @@ to their PC, which then yields. Without the own-pc_id change, an anchor that hea
 in progress, so a running station never actually yields even once its PC wanted to. Collision risk on the barge-in poll is ~30% (air occupancy of one station
 ≈ 3×(3–4&nbsp;ms) per 33&nbsp;ms round); a collided poll is a normal miss and the next one goes out after the next backoff.</p>
 
+<div class="fw"><div class="fwh">Firmware answer · anc3.2.0 / tag3.2.0 · <span class="fws">Done</span></div>
+<p><b>Changed:</b> arm once per busy period; own-station frames do not clear a running backoff (from anc3.1.5).</p>
+<p><b>Fixed 2026-10-22 (REC-005):</b> the deadline compare is now wrap-safe, an expired deadline is cleared on every main-loop pass, and arming never stores 0. 9K treats an armed backoff as "two stations": no adaptation.</p>
+</div>
+
 <h3>8B &nbsp;<span class="pill blocker">blocker</span>&nbsp; <code>BACKOFF_CTRL = 0</code> must also release an armed timer <span class="where">— anc/src/main.cpp:281–283 (UART_OPCODE_BACKOFF_CTRL)</span></h3>
 <pre><span class="c">/* current: disables the scan only — an already-armed deadline keeps blocking SEARCH_TWR (main.cpp:252) until it expires */</span>
 <span class="k">if</span>(msg.op_backoff_ctrl_req.BackOFF_CTRL == <span class="s">0</span>){
@@ -320,6 +393,10 @@ in progress, so a running station never actually yields even once its PC wanted 
 <p class="codecap">This is the PC's <b>barge-in</b> lever: after N consecutive <code>UWB_Backoff</code> replies the PC sends opcode 19 = 0 to one anchor, polls once
 (making the other station yield), and sends 19 = 1 again. With 8A in place barge-in is rarely needed; without 8A it is the <i>only</i> way for the second
 station to get in, and today it costs an extra ≤209&nbsp;ms wait because the armed deadline survives the disable. One line.</p>
+
+<div class="fw"><div class="fwh">Firmware answer · anc3.2.0 / tag3.2.0 · <span class="fws">Done</span></div>
+<p><b>Changed:</b> opcode 19 = 0 clears <code>backoff_timer</code> (anc3.1.5).</p>
+</div>
 
 <p class="note"><b>8C below is dropped (2026-10-14):</b> the PC uses only the backoff bit of the TWR reply and needs no time — it polls every round, so the next reply shows when the backoff ended. sC3.0.70 already clears the bit on expiry and counts down in Status. Kept for the record.</p>
 <h3>8C &nbsp;<span class="pill none">dropped</span>&nbsp; Report backoff <i>time left</i> (ms), not a raw tick, and only while it is running <span class="where">— anc/src/uart_communication.c:176 (TWR reply) · :193 (Status) · :108 / :128 (BIT, wake-up)</span></h3>
@@ -343,6 +420,11 @@ reply-&gt;op_twr_rply.errors.bits.UWB_Backoff = !!dwmInfo.backoff_timer;
 already says no DW data). The PC then waits exactly <code>left</code>&nbsp;ms (+ a few ms) instead of a blind 300&nbsp;ms, and never mistakes a stale deadline for a live backoff.
 Keep the existing convention that the reply is still sent (the anchor must answer every <code>SEARCH_TWR</code>, backoff or not).</p>
 
+<div class="fw"><div class="fwh">Firmware answer · anc3.2.0 / tag3.2.0 · <span class="fws">Done</span></div>
+<p><b>Changed:</b> dropped as described. Status reports ms left.</p>
+<p><b>Changed 2026-10-22:</b> the timer tick is now a true 1&nbsp;ms, so the Status backoff field really is in ms. Before, it counted 2.05&nbsp;ms ticks, so the same backoff now reads about twice as large.</p>
+</div>
+
 <h3>8D &nbsp;<span class="pill optional">choose</span>&nbsp; Backoff window: coarse (TDM-like, 300&nbsp;ms slots) or fine (exchange-level interleave) <span class="where">— anc/inc/dw1000.h:93–94</span></h3>
 <table class="avoid-break">
   <thead><tr><th style="width:120px">Mode</th><th style="width:170px">Constants</th><th>Behaviour with two stations</th><th>PC side</th></tr></thead>
@@ -358,10 +440,19 @@ Keep the existing convention that the reply is still sent (the anchor must answe
 <p class="codecap">The PC's position/bearing filters propagate with the measured <code>dt</code> (CV predict, dt-scaled gates), so either mode is safe for the filtering; the fine mode is
 better for it (jittered 15&nbsp;Hz beats 30&nbsp;Hz with 300&nbsp;ms holes — fewer lost rounds, less lag at every handover). Both values are compile-time; a runtime setter (opcode 19 payload byte 2 = top-ms) would let the PC pick per deployment.</p>
 
+<div class="fw"><div class="fwh">Firmware answer · anc3.2.0 / tag3.2.0 · <span class="fws">Done</span></div>
+<p><b>Changed:</b> runtime window via opcode 19 <code>{ctrl, top, min}</code> (anc3.1.5). The coarse window is the default.</p>
+<p><b>Changed 2026-10-22 (REC-006):</b> TIM4 used to tick every 2.051&nbsp;ms, not 1&nbsp;ms. The prescaler register divides by value&nbsp;+&nbsp;1, and the period assumed a 160&nbsp;MHz clock where the PLL runs 156&nbsp;MHz. It is now exactly 1&nbsp;kHz and the real timings are kept: defaults top&nbsp;410 / min&nbsp;21 (21–430&nbsp;ms, as 200/10 old ticks), RX wait 144&nbsp;ms, watchdog 2.05&nbsp;s. The opcode-19 bytes are still read <b>in the old 2.051&nbsp;ms units</b>, so every host setting keeps its measured real timing (the §8 bench figures stay valid). <b>Host note:</b> the "fine" values top&nbsp;15 / min&nbsp;1 therefore mean 31 / 2&nbsp;ms in real time, as they always did.</p>
+</div>
+
 <h3>8E &nbsp;<span class="pill important">important</span>&nbsp; Seed <code>random()</code> per anchor <span class="where">— anc/src/main.cpp init (before the main loop); promotes 5C</span></h3>
 <pre><span class="add">srandom((</span><span class="k">unsigned</span><span class="add">)(</span><span class="m">PC_ID</span><span class="add"> ^ (dwmInfo.anchor_id &lt;&lt; </span><span class="s">8</span><span class="add">) ^ HAL_GetTick() ^ </span><span class="m">HAL_GetUIDw0</span><span class="add">()));</span></pre>
 <p class="codecap">With two stations this is no longer cosmetic: all six anchors run the same unseeded sequence, so two anchors that hear the same foreign frame pick the same backoff
 and their barge-in polls collide deterministically, round after round. Any per-device seed breaks the lock-step.</p>
+
+<div class="fw"><div class="fwh">Firmware answer · anc3.2.0 / tag3.2.0 · <span class="fws">Done</span></div>
+<p><b>Changed:</b> seeded per anchor from PC id, anchor id, tick and the chip UID before the main loop (anc3.1.5). <code>Link_Init()</code> draws its first sequence number after the seed.</p>
+</div>
 
 <h3>8F &nbsp;<span class="pill important">important</span>&nbsp; Imposter mode (BIT) must match the id a poll can actually carry — bit 15 masked <span class="where">— anc/src/dw1000.cpp:402 (dwTagMode) · :40 (dwConfig, tx_resp_msg.src) · :232 (dwRange, rx_resp_msg.src) · main.cpp:248</span></h3>
 <div class="callout warn">
@@ -384,6 +475,10 @@ tx_resp_msg.src = <span class="add">(</span>(dwmInfo.mine_pc_id &lt;&lt; <span c
 affected station (<code>SET_ID</code>, hitan-cli menu 2) — the PC-side BIT now names this condition from the Status <code>self_id</code> instead of reporting three unrangeable pairs.
 Longer term, bit 15 of the UART id should not double as a flag at all: 14 bits of PC id + 2 of anchor id already fill the 16, so the LoRa-only request belongs in its own byte.</p>
 
+<div class="fw"><div class="fwh">Firmware answer · anc3.2.0 / tag3.2.0 · <span class="fws">Done</span></div>
+<p><b>Changed:</b> <code>dwSetFrameIds()</code> builds the imposter's response <code>src</code> as <code>id &amp; 0x7FFF</code>. The imposter compares the poll's <code>des</code> against that masked id (anc3.1.5).</p>
+</div>
+
 <h3>8G &nbsp;<span class="pill important">important</span>&nbsp; SET_ID must also refresh the UWB frame ids, or say "reboot required" <span class="where">— anc/src/main.cpp (case UART_OPCODE_SET_ID) · dw1000.cpp:36–40 (dwConfig)</span></h3>
 <p>The changelog (C1.6.03) says a PC-id change no longer needs a reset. That holds only for the Status <code>self_id</code>: the handler calls
 <code>SetAnchor_self_id()</code>, which rebuilds <code>lora_rxInfo.self_id</code>. The UWB side keeps the boot-time value — <code>dwmInfo.mine_pc_id</code>
@@ -397,6 +492,11 @@ SetAnchor_self_id();
 <span class="add">tx_poll_msg.src = rx_resp_msg.des = tx_resp_msg.src = id;   </span><span class="c">// the three frame templates dwConfig() fills</span></pre>
 <p class="codecap">Also on the PC side: the payload is the PC id itself (the anchor id comes from the cable pins). The hitan-cli SET_ID menu used the older
 <code>pc&lt;&lt;2 | anchor</code> packing, so entering "PC 2, anchor 3" stored PC id 11; fixed 2026-10-13, and it now prompts for a power-cycle.</p>
+
+<div class="fw"><div class="fwh">Firmware answer · anc3.2.0 / tag3.2.0 · <span class="fws">Done</span></div>
+<p><b>Changed:</b> <code>SET_ID</code> refreshes <code>dwmInfo.mine_pc_id</code> and calls <code>dwSetFrameIds()</code>, so ranging, imposter and backoff use the new id at once (anc3.1.5).</p>
+<p><b>Fixed 2026-10-22, tag:</b> a new tag id only appeared after a reset, because the tag's <code>Flash_Write</code> did not invalidate ICACHE (the anchor's did). It does now. <code>SET_ID</code> on both ends also keeps the crystal-trim slot.</p>
+</div>
 
 <div class="callout ok avoid-break">
   <b>PC-side contract (hitan_station), for reference.</b> <code>errors</code> bit4 (0x10) on a TWR reply means <i>not polled</i>: not a missed range, not a dead anchor,
@@ -427,6 +527,27 @@ SetAnchor_self_id();
   </ul>
 </div>
 
+<div class="fw part"><div class="fwh">Firmware answer · anc3.2.0 / tag3.2.0 · <span class="fws">Partly done</span></div>
+<p><b>How rule zero is met in anc3.2.0 / tag3.2.0:</b></p>
+<ul>
+<li><b>Ground state = today's frames.</b> The legacy 12-byte poll and 20-byte response never change; older firmware checks exactly those lengths, and <code>static_assert</code>s lock them. Extended frames (17 / 24 bytes) are used only after the tag answers a hello. Two unanswered extended polls, a legacy answer, 1&nbsp;s of silence, another tag id or two stations put the anchor back on legacy polls, and a legacy poll always puts a new tag at maximum. Every old/new mix was ranged on the bench.</li>
+<li><b>Make-before-break:</b> quieter LoRa power goes request (seq) → ack → confirm → proof. Louder takes effect at once. UWB power is per exchange — the tag answers each poll at the level that poll asked for and returns to maximum right after — so there is no shared UWB state to get out of step.</li>
+<li><b>Rate-limited and bounded:</b> quieter steps are at least <code>step_interval</code> apart (default 2&nbsp;s) and need 2 good frames after the previous step. UWB never steps below sensitivity +&nbsp;10&nbsp;dB. LoRa only steps up below −7&nbsp;dB SNR (SF12 decodes to −20&nbsp;dB) or when the signal is more than 3 bands under target.</li>
+<li><b>Unilateral reverts:</b> the tag drops a quieter LoRa step after 500&nbsp;ms and goes to maximum after 1&nbsp;s without its owner anchor. The anchor goes to maximum after a missed response (UWB), after 1.5&nbsp;s without a LoRa packet, or after a handshake that does not complete in 5 tries.</li>
+</ul>
+<p><b>Not done:</b></p>
+<ul>
+<li>The "LoRa control plane": not built yet. Today the tag never listens on LoRa (<code>WITHOUT_WAKEUP</code>; its half-duplex SX1262 sends beacons back to back), so all control rides on UWB, which the tag hears on every poll.
+<b>Agreed next (2026-10-22):</b> the tag accepts the same requests over LoRa as over UWB, through one seq-based handler, acknowledged on both paths.
+<ul>
+<li><b>Listen window:</b> after every ~20th beacon while UWB polls arrive (≈1&nbsp;% beacon cost); after every beacon once UWB has been silent for 1&nbsp;s.</li>
+<li><b>Anchor side:</b> commands go at full power on the robust SF, in packet lengths older anchors reject.</li>
+</ul></li>
+<li>Channel changes: none exist, because 9H is not done.</li>
+<li>The full 100-trial chaos test: not run. What was run: host stops, feature switched off, two stations, every firmware mix, both tag revisions.</li>
+</ul>
+</div>
+
 <div class="callout ok">
   <b>Host side, no firmware needed.</b> (1) <b>LDE NLOS preset:</b> <code>LDE_CFG1</code> is live-tunable via opcode 14 (<code>dw1000.cpp:22</code>, default 0x6D = LOS); APS006 Pt 2 recommends NTM 7 / PMULT 3 → <code>0x67</code> for NLOS — offered as a LOS/NLOS knob, not a default (more false first paths in clean air). (2) <b>Level-dependent range bias (APS011):</b> the received level is in the diagnostics, so the bias table is applied on the host.
 </div>
@@ -440,6 +561,12 @@ SetAnchor_self_id();
 </tbody></table>
 <p>Older hosts ignore the extra bytes; the new host accepts the shorter reply from older firmware. <b>Host use:</b> prNlos per APS006 Pt 3 §5.2 from <code>|FP_INDEX/64 − PP_INDEX|</code>, attributable at last; the SFD correction on RXPACC; the anchor's tick replaces the host receipt time in the per-exchange alignment.</p>
 
+<div class="fw"><div class="fwh">Firmware answer · anc3.2.0 / tag3.2.0 · <span class="fws">Done</span></div>
+<p><b>Changed:</b> <code>dwLatchExchange()</code> reads <code>LDE_PPINDX</code> and <code>RXPACC_NOSAT</code> right after <code>dwt_readdiagnostics()</code> on a valid range, before RX re-arms; the tick is latched at the response frame.</p>
+<p><b>Layout:</b> frame offsets including the 2-byte header — <code>txw</code> is bytes 44–45; new bytes 46–47 <code>lde_ppindx</code>, 48–49 <code>rxpacc_nosat</code>, 50–53 <code>exchange_tick_ms</code> (HAL tick, true ms); 55 bytes in all.</p>
+<p><b>Difference from the text:</b> the extra bytes are sent only with 9I bit6 (<code>REPLY_EXT</code>). With it off the reply is the anc3.1.5 47 bytes.</p>
+</div>
+
 <h3>9B &nbsp;Latch a CIR window around the first path, new opcode 21 <code>READ_CIR_WINDOW</code> <span class="tag important">important</span></h3>
 <p>In the same latched block, 32 complex accumulator samples starting 8 before the detected first path, read while the accumulator still holds this reception (before RX re-arms):</p>
 <pre>start = (FP_INDEX &gt;&gt; 6) - 8;                 /* FP_INDEX is Q10.6 in RX_TIME */
@@ -447,6 +574,12 @@ _dwt_enableclocks(READ_ACC_ON);
 dwt_readaccdata(buf, 1 + 4*32, start * 4);   /* 1 dummy octet, then (i16 re, i16 im) x 32 */
 _dwt_enableclocks(READ_ACC_OFF);</pre>
 <p>Reply to opcode 21 (no request payload): bytes 2–3 <code>fp_index</code> u16 (raw Q10.6), 4–5 <code>start</code> u16, 6 <code>n</code> u8 (32), 7… <code>n</code> × (i16 re, i16 im) LE — 135 bytes, ≈1.5&nbsp;ms at 921600. A separate opcode so the per-round cost is opt-in: the host reads it only with the quality gate on, right after the diagnostics. <b>Host use:</b> the leading-edge features the UWB NLOS literature actually uses (rise time, energy before vs after the first path, peak-to-first-path delay, kurtosis) and later a small classifier on the truth-labelled recordings. This is the only change that makes a real CIR-based NLOS gate possible.</p>
+
+<div class="fw"><div class="fwh">Firmware answer · anc3.2.0 / tag3.2.0 · <span class="fws">Done</span></div>
+<p><b>Changed:</b> 32 complex samples from <code>(FP_INDEX&gt;&gt;6) − 8</code>, clamped to the 1016-sample accumulator, latched in the same block (<code>dwt_readaccdata</code> forces the ACC clocks itself and leaves the GPIO clocks alone). Opcode 21 returns them.</p>
+<p><b>Differences:</b> the latch runs only with 9I bit5 (<code>CIR</code>), because the accumulator read costs SPI time on every range. The reply is 136 bytes with the checksum; <code>n = 0</code> when off or before the first range. With 9F the window belongs to the reported (shortest) exchange.</p>
+<p><b>Bench note:</b> the window peak sits at 17–19k counts near and far alike (AGC). It shows the leading-edge shape well, but not absolute level.</p>
+</div>
 
 <h3>9C &nbsp;Per-exchange data in the SEARCH_TWR reply <span class="tag important">important</span></h3>
 <p>Append to the <b>SEARCH_TWR (opcode 5)</b> reply after byte 16 (<code>anchor_error_v</code>):</p>
@@ -457,6 +590,12 @@ _dwt_enableclocks(READ_ACC_OFF);</pre>
 <tr><td>23</td><td><code>lora_signal_rssi</code> u8, SX126x <code>SignalRssiPkt</code>, encoded like <code>lora_rssi</code> (raw = dBm + 256)</td></tr>
 </tbody></table>
 <p><code>lora_rssi</code> (byte 11) is <code>RssiPkt</code> today. <code>SignalRssiPkt</code> is the level of the LoRa signal after despreading — it excludes in-band noise and interference, which is exactly what differs near the ground. Both come from the one <code>GetPacketStatus()</code> call in the LoRa receive path (<code>Lora.cpp</code>). The host's direction maths moves to the signal level.</p>
+
+<div class="fw"><div class="fwh">Firmware answer · anc3.2.0 / tag3.2.0 · <span class="fws">Done</span></div>
+<p><b>Changed:</b> bytes 17–20 <code>exchange_tick_ms</code>, 21 <code>tag_lora_tx_dbm</code>, 22 <code>tag_uwb_tx_level</code>, 23 <code>lora_signal_rssi</code> (dBm, same packet and same <code>GetPacketStatus()</code> call as <code>lora_rssi</code>), plus 24 <code>k_used</code> (9F) and 25 <code>profile_used</code> (9H; 0, or 0xFF when unknown). 27 bytes in all, sent only with bit6.</p>
+<p><b>Differences:</b> tick&nbsp;0 and echo 0x7F/0xFF when the anchor had no valid UWB exchange that round (LoRa-only, backoff, no answer). Each anchor's tick is its own clock since boot.</p>
+<p><b>Bench:</b> SignalRssiPkt tracks RssiPkt within 0.5–1.5&nbsp;dB here.</p>
+</div>
 
 <h3>9D &nbsp;Negotiated TX power, tag and anchor (AGC-style) <span class="tag important">important</span></h3>
 <p><b>Goal:</b> keep every receiver in its linear range at any distance — LoRa level differences stay meaningful close in, the UWB accumulator does not saturate. <b>Start at today's maximum</b> and step down only as the tag comes close; back to maximum the moment the tag goes quiet.</p>
@@ -470,15 +609,54 @@ _dwt_enableclocks(READ_ACC_OFF);</pre>
   <li><b>Host:</b> switched and configured through opcode 22 <code>SET_LINK_FEATURES</code> (9I), applied by the station worker like the backoff toggle; the current request and the tag's echo in the <b>STATUS</b> reply. The host normalises the hot/cold bar and the LoRa calibration by the reported tag power (<code>level + (max − reported)</code>) so a quieter tag does not read as a farther one. Default off until the field test says otherwise.</li>
 </ul>
 
+<div class="fw part"><div class="fwh">Firmware answer · anc3.2.0 / tag3.2.0 · <span class="fws">Partly done</span></div>
+<p><b>Changed — LoRa (works):</b> the owner anchor steers the tag's LoRa power with request / ack / confirm / proof, one 2&nbsp;dB step per packet, target and band from opcode 22.</p>
+<ul>
+<li>Bench, 4.4&nbsp;m behind a wall: 22 → 0&nbsp;dBm, SignalRssi −50 → −66&nbsp;dBm.</li>
+<li>MOB at 1.1&nbsp;m: from −26&nbsp;dBm (compressed) to −8&nbsp;dBm tag power, −48/−46/−44&nbsp;dBm at the three anchors. Out of compression, spread kept, but <b>−70 is unreachable at 1&nbsp;m</b>: the SX1262 floor is −9&nbsp;dBm. Same behaviour on the Rev C and Rev D tags.</li>
+<li>The SX126x driver used to force 22&nbsp;dBm in <code>SetTxParams</code> whatever was asked. It now honours the value, clamped to −9…22.</li>
+</ul>
+<p><b>Changed — UWB (mechanism works, metric does not):</b> per exchange and per anchor, one 3&nbsp;dB level from a table of 8 below the board's maximum. Boards with the 10&nbsp;dB maximum (Rev C) only have levels 0–3; the tag answers at its quietest and the anchor takes that as the floor.</p>
+<p><b>Differences from the text:</b></p>
+<ul>
+<li>"Front anchor owns UWB" became "every anchor runs its own UWB level", because the level applies to that one response only.</li>
+<li>LoRa has one owner per station, chosen by opcode 22 byte 9.</li>
+<li>Floor −9&nbsp;dBm as specified.</li>
+<li>The request and echo ride in the extended UWB frames, not in the LoRa wake frame (the tag does not listen on LoRa; wake-ups are always at maximum).</li>
+</ul>
+<p><b>Open — the UWB loop has no usable input:</b> <code>rx_power_dbm</code> reads −78&nbsp;dBm at 1.2&nbsp;m line of sight and −75&nbsp;dBm with Rev D's 20&nbsp;dB more TX gain. The DW1000 estimate goes flat above ≈−85&nbsp;dBm true power, so the loop never sees "hot" and stays at maximum (fails safe, buys nothing). It needs another input, such as a level schedule from the anchor's own range calibrated against APS011, before it is worth enabling.</p>
+</div>
+
 <h3>9E &nbsp;LoRa frequency diversity <span class="tag optional">phase 2</span></h3>
 <p>Near the ground the level at one frequency sits in a fade for seconds. The tag alternates two channels by packet-counter parity, the anchors listen in step, the host averages direction across the pair. A bigger change (channel plan, per-channel duty cycle, both firmwares); only if 9D leaves the arc unstable near the ground.</p>
 
 
+<div class="fw no"><div class="fwh">Firmware answer · anc3.2.0 / tag3.2.0 · <span class="fws">Not done</span></div>
+<p><b>Omitted:</b> frequency diversity. <b>Why:</b> it is phase 2 by this document's own order. It needs a channel plan and duty-cycle budget on both firmwares, and there is not yet a measurement showing the arc stays unstable once 9D has restored the LoRa spread.</p>
+</div>
+
 <h3>9F &nbsp;Repeat the exchange and report the minimum <span class="tag important">important</span></h3>
 <p><b>Anchor only, no negotiation.</b> NLOS error is one-sided: a reflection only ever makes a range read <i>long</i>. On a SEARCH_TWR the anchor runs <code>K</code> exchanges back-to-back and reports the <b>shortest</b> valid range (and that exchange's diagnostics). <code>K</code> adapts to the anchor's own last diagnostics: 1 while RX−FP is under the soft threshold, 3 when it is above. Cost ≈11&nbsp;ms per extra exchange; the station worker already tolerates longer rounds. Request byte: SEARCH_TWR payload gains an optional third byte <code>k_max</code> (0 = anchor decides, 1–5 = fixed); reply byte 24 <code>k_used</code>. <b>Host use:</b> none required — the range is just better; the host reads <code>k_used</code> for the round-time bookkeeping and the per-exchange tick (9C) of the reported exchange. The cheapest large NLOS win on this list.</p>
 
+<div class="fw"><div class="fwh">Firmware answer · anc3.2.0 / tag3.2.0 · <span class="fws">Done</span></div>
+<p><b>Changed:</b> <code>dwRangeRound(k)</code> runs up to K back-to-back exchanges and keeps the shortest valid one with its own diagnostics, latches and echo. K comes from the SEARCH_TWR third byte, else the opcode-22 <code>k_max</code>, else auto (3 while RX−FP &gt; 6&nbsp;dB or the NLOS preset is on, otherwise 1).</p>
+<p><b>Differences:</b></p>
+<ul>
+<li>A miss ends the round.</li>
+<li>K&nbsp;=&nbsp;1 while two stations share the tag (9K).</li>
+<li><b>Auto K only above −90&nbsp;dBm rx level.</b> At km range RX−FP is high from noise, and "keep the shortest" would pick noise-triggered early paths and read short. A host-pinned K still applies.</li>
+</ul>
+<p><b>Bench, behind a wall:</b> K=3 + NLOS preset gave p10–p90 4.20–4.35&nbsp;m (max 4.44) against 4.25–4.46 (max 5.05) at K=1. Cost ≈10&nbsp;ms per extra exchange.</p>
+</div>
+
 <h3>9G &nbsp;LDE preset per state <span class="tag important">important</span></h3>
 <p><b>Anchor only.</b> The anchor switches <code>LDE_CFG1</code> itself: NLOS multiplier (NTM 7 / PMULT 3, <code>0x67</code>) while its last RX−FP sits above the soft threshold, LOS (<code>0x6D</code>) when it clears, with a dead band of 2&nbsp;dB and a hold of 10 exchanges so it does not chatter. Requires the RX reset the driver notes after an LDE change (<code>dw1000.cpp:234</code>). The host keeps its opcode-14 override; a STATUS bit reports which preset is active. Pairs with 9F: when the anchor flips to the NLOS preset it also raises <code>K</code>.</p>
+
+<div class="fw"><div class="fwh">Firmware answer · anc3.2.0 / tag3.2.0 · <span class="fws">Done</span></div>
+<p><b>Changed (anchor):</b> RX−FP from the diagnostics, soft threshold 6&nbsp;dB (APS006), dead band ±1&nbsp;dB, 10 exchanges to flip. On a flip it writes <code>LDE_CFG1</code> and resets RX; the LOS value is the opcode-14 value. The STATUS link block reports the preset.</p>
+<p><b>Differences:</b> only above −90&nbsp;dBm (a weak signal counts as LOS, same reason as 9F). Bench: it flipped to NLOS behind the wall on its own.</p>
+<p><b>Tag:</b> follows the anchor's preset over UWB (see §7), with the same ground-state reverts.</p>
+</div>
 
 <h3>9H &nbsp;Link profile negotiation (one byte, not six parameters) <span class="tag important">important</span></h3>
 <p>Everything the tag must change in step with the anchor — TX power (9D), frequency diversity (9E), and the radio settings below — is negotiated as <b>one profile index</b>, with the request / echo / confirm / fall-back state machine of rule zero. The anchor picks the profile from RX level and range; the tag echoes it in every frame; both drop to profile 0 after 1&nbsp;s of silence; wake-ups and all anchor→tag LoRa commands always go at profile 0. A profile only ever changes the tag's beacon and the UWB exchange, never the LoRa control path.</p>
@@ -493,6 +671,26 @@ _dwt_enableclocks(READ_ACC_OFF);</pre>
   <li><b>Host:</b> opcode 22 (9I) carries <code>profile_max</code> and <code>profile_override</code>; the Configuration tab shows the requested and echoed profile per anchor. The host's time alignment (9C) and quality gates are profile-agnostic; the per-anchor first-path SNR history (relative gate) must reset on a profile change, since the normal level moves with the preamble.</li>
   <li><b>Host side, no firmware:</b> the SS-TWR clock-offset correction (range error ∝ reply delay × crystal offset; the offset is already in the diagnostics as DRX_CAR_INT) is applied on the host.</li>
 </ul>
+
+<div class="fw no"><div class="fwh">Firmware answer · anc3.2.0 / tag3.2.0 · <span class="fws">Not done</span></div>
+<p><b>Omitted:</b> profile negotiation (UWB data rate, preamble, channel; LoRa SF and beacon rate).</p>
+<p><b>Why — decision 2026-10-21:</b></p>
+<ul>
+<li>The premise of an always-on anchor→tag LoRa command path does not hold: the tag never listens on LoRa.</li>
+<li>The DW1000 holds one configuration at a time, so a profile mismatch means no ranging. That is the one failure rule zero forbids.</li>
+<li>It needs its own design pass: a tag LoRa listen window, or UWB-only control with listen rotation. Plus a bench check that channel 4 works with the installed antennas.</li>
+</ul>
+<p>The TWR reply's <code>profile_used</code> byte and the STATUS profile fields are in place, always 0.</p>
+<p><b>Agreed plan (2026-10-22):</b> profiles by measured range, with hysteresis and a dwell of at least 5&nbsp;s. That is two switches per approach and two on the way out; everything below 300&nbsp;m that cannot break the link (power, LDE, repeats) adapts freely.</p>
+<ul>
+<li><b>&gt; 1&nbsp;km:</b> 110&nbsp;kbps / preamble 2048 (today's profile).</li>
+<li><b>1&nbsp;km – 300&nbsp;m:</b> 850&nbsp;kbps / 1024. Switch in at 0.9&nbsp;km, back out at 1.1&nbsp;km.</li>
+<li><b>&lt; 300&nbsp;m:</b> 6.8&nbsp;Mbps / 256. Switch in at 250&nbsp;m, back out at 350&nbsp;m.</li>
+<li><b>How a switch happens:</b> the whole station switches, coordinated by the host. Each switch is a full 9J handshake over UWB and LoRa.</li>
+<li><b>If a switch fails:</b> each side returns to the ground profile by itself within 1&nbsp;s (accepted: a bounded ≈1&nbsp;s gap, never a permanent loss).</li>
+<li><b>Order:</b> needs the LoRa command path first.</li>
+</ul>
+</div>
 
 <h3>9J &nbsp;Change handshake: the tag is told, acknowledges, and nothing switches until both sides have proof <span class="tag blocker">required</span></h3>
 <p>Every change the tag must apply — power, profile, channel alternation — goes through one three-way handshake with a sequence number. No side ever switches on a request alone, and no side is ever on a configuration the other does not know about.</p>
@@ -512,6 +710,19 @@ _dwt_enableclocks(READ_ACC_OFF);</pre>
   <li><b>Hard rule for the implementation:</b> there is no code path on either side that changes a radio setting without a confirmed sequence number, except the reverts toward profile 0. A watchdog on each side asserts, once per second, that the configured radio matches the last confirmed state or profile 0; any other state is reset to profile 0.</li>
 </ul>
 
+<div class="fw part"><div class="fwh">Firmware answer · anc3.2.0 / tag3.2.0 · <span class="fws">Partly done</span></div>
+<p><b>Changed:</b> the handshake exists for the one setting that is negotiated today, the tag's LoRa power. It runs over UWB only.</p>
+<ul>
+<li><b>Request:</b> <code>seq</code> + value.</li>
+<li><b>Acknowledge:</b> <code>ack_seq</code> + the "pending" flag.</li>
+<li><b>Confirm:</b> <code>confirm_seq</code>.</li>
+<li><b>Proof:</b> the echoed power.</li>
+<li><b>Limits:</b> 5 tries per step. The tag ignores a repeated seq (keep-alive) and locks to one owner anchor; requests from others count only when louder.</li>
+<li><b>Reverts:</b> 500&nbsp;ms → previous power, 1&nbsp;s → maximum.</li>
+</ul>
+<p><b>Omitted:</b> LoRa as a second path, listen rotation and profile switching. Those only matter with 9H.</p>
+</div>
+
 <h3>9K &nbsp;Two stations, one tag: adaptation is frozen, backoff untouched <span class="tag blocker">required</span></h3>
 <div class="callout warn">
   <b>Backoff already costs performance today</b> (§8: 42 + 30 valid ranges/s with two stations against 81–89/s alone, p95 gaps of 83 / 229&nbsp;ms). Nothing in §9 may make that worse, and nothing in §9 may add a second mechanism that interacts with it. So the rule is not "coordinate the two", it is "do not adapt while there are two".
@@ -526,6 +737,11 @@ _dwt_enableclocks(READ_ACC_OFF);</pre>
   <li><b>Regression gate.</b> Every §9 feature ships only if the §8 two-station bench (both orders of joining, 20&nbsp;s overlap, one station alone 10&nbsp;s before and after) shows valid ranges per second and p95 gaps no worse than the sC3.0.70 figures, with the feature enabled on both stations. A feature that costs two-station throughput is kept off until it is fixed, whatever it buys alone.</li>
 </ul>
 <p><b>Bench acceptance:</b> Fly alone at 100&nbsp;m on profile 0, Mob joins at 2&nbsp;m: Mob ranges within 1&nbsp;s on profile 0; the tag reports two stations; neither station sends a request; the §8 rates hold. Mob alone for 2&nbsp;s after Fly stops: the first handshake to the near profile completes; Fly returns: the tag is back on profile 0 at maximum within one rotation period and Fly ranges within 1&nbsp;s. 20/20 in each direction.</p>
+
+<div class="fw"><div class="fwh">Firmware answer · anc3.2.0 / tag3.2.0 · <span class="fws">Done</span></div>
+<p><b>Changed:</b> the tag records the PC ids of polls addressed to it over 2&nbsp;s and reports "two stations" in byte 9 of both the extended response and the hello answer. The anchor also counts its own backoff arming. Either one means legacy polls (the 12-byte frame §8 was tuned on, tag at maximum), K&nbsp;=&nbsp;1 and no requests, until 2&nbsp;s without a sign of a second station. 9A/9C bytes, the CIR latch and 9G stay on.</p>
+<p><b>Bench 2026-10-22 (FLY 3 anchors + MOB, Rev C and Rev D tags):</b> every anchor froze. Rates and gaps were the same with features on and off (FLY 17–27, MOB 20–22 valid/s per anchor). No tag was lost. The bench script has no host duty cycle, so the real §8 regression gate still needs the station software.</p>
+</div>
 
 <h3>9I &nbsp;Every §9 feature is switchable and configurable from the app <span class="tag blocker">required</span></h3>
 <p>Nothing in §9 is always-on. Each feature has its own on/off and its settings in <b>ADVANCED → Configuration</b> (persisted in <code>hitan_settings.cfg</code> like the backoff and duty-cycle knobs), ships <b>off</b>, and is pushed to the anchors by the station worker on start and on every change, like opcode 19 today.</p>
@@ -557,17 +773,51 @@ _dwt_enableclocks(READ_ACC_OFF);</pre>
 <tr><td>7</td><td>9E</td><td>fade decorrelation near the ground (a field of the near profile)</td><td>both firmwares, channel plan</td></tr>
 </tbody></table>
 
-<div class="callout ok">
-  <b>Implemented in anc3.2.0 / tag3.2.0 (2026-10-22): 9A, 9B, 9C, 9D, 9F, 9G, 9I, 9K.</b> Not yet: 9E, 9H, 9J profiles (no anchor→tag LoRa command path exists: the tag build never listens on LoRa, and a profile mismatch stops ranging). What differs from the text above:
+<div class="fw"><div class="fwh">Firmware answer · anc3.2.0 / tag3.2.0 · <span class="fws">Done</span></div>
+<p><b>Changed:</b> opcode 22 <code>SET_LINK_FEATURES</code> with bytes 0–8 as tabled, plus <b>byte 9 <code>lora_owner</code></b> (1 = this anchor runs the LoRa loop; set it on one anchor per station — on MOB the front anchor). A shorter payload sets only the leading fields; empty = read. The reply is the 10-byte configuration. The configuration is RAM only and comes up all-off at boot.</p>
+<ul>
+<li>Extended frames run while bit2 (9D) or bit1 (9G) is on: both carry tag settings.</li>
+<li>Off means revert: clearing the last of them asks for maximum power and LOS until the tag shows it, then the anchor returns to legacy polls. Clearing only bit2 keeps the frames, puts UWB back at maximum at once, and stops the LoRa requests, so the tag returns to maximum within 1&nbsp;s.</li>
+<li>Bit6 off ⇒ DIAGNOSTIC_STATUS, SEARCH_TWR and STATUS keep their anc3.1.5 lengths, byte for byte.</li>
+<li><b>STATUS <code>link_state</code> (bit6)</b>, payload 66–75: features; flags (1 extended frames, 2 LoRa owner, 4 handshake in flight, 8 reverting, 16 two stations / backoff, 32 tag on the NLOS preset); profile requested; profile echoed; requested LoRa dBm; requested UWB level; tag LoRa dBm; tag UWB level; LDE preset; <code>k_used</code>.</li>
+<li><b>Host:</b> <code>unpack_status_reply</code>'s <code>len == 67</code> long-form test must become <code>&gt;= 67</code>.</li>
+</ul>
+<p><b>Ignored for now:</b> <code>profile_max</code> / <code>profile_override</code> are stored but have no effect (9H). Bit3 (9H) and bit4 (9E) do nothing.</p>
+</div>
+
+<h3>9L &nbsp;Antenna-delay calibration — routine for the analyzer <span class="tag important">important</span></h3>
+<p>Absolute range accuracy rests on the antenna delays (APS014: ≈30&nbsp;cm 3σ uncalibrated, 2.15&nbsp;mm/°C drift). Since tag3.2.0 both the TX and the RX delay count. Before that only the tag's RX delay did, so every tag calibrated earlier must be redone.</p>
+<p><b>Firmware support today:</b></p>
+<ul>
+<li><b>Opcode 20 <code>ANT_DELAY</code>:</b> <code>{tx u16, rx u16}</code> in DW time units (15.65&nbsp;ps); 0 or 0xFFFF = back to the default (anchor 16550/16500, tag 16500/16500); empty = read. Reply <code>{status, tx, rx}</code> with the flash values. Applied at once and kept across resets, firmware updates and <code>SET_ID</code>. Over UART, one device at a time.</li>
+<li><b>Opcode 8 <code>BIT_CONTROL</code> <code>{tag_imposter = 1}</code>:</b> turns an anchor into a responder, so anchors can range each other. The imposter now uses its own flash delays in its response.</li>
+<li><b>Sensitivity:</b> each unit of TX or RX delay on <i>either</i> device moves the range by <b>2.346&nbsp;mm</b>; more delay reads shorter. Measured: +100 tag TX units → −24.0&nbsp;cm.</li>
+</ul>
+<p><b>Procedure (three-device method, APS014):</b></p>
+<ol>
+<li><b>Setup.</b> Line of sight, devices on stands ≥&nbsp;1.5&nbsp;m high, antennas facing, 10–30&nbsp;m apart, distances measured to ±1&nbsp;cm. Too close and the APS011 level bias skews the result, and the chip cannot report it. Keep the analyzer's rx level at or below ≈−85&nbsp;dBm, or increase the distance. Features off (opcode 22 = 0: LOS LDE, K&nbsp;=&nbsp;1), all delays at the default. Note the temperature.</li>
+<li><b>Anchor triangle.</b> Take three anchors A, B, C at known distances d<sub>AB</sub>, d<sub>AC</sub>, d<sub>BC</sub>. For each pair, put one anchor in imposter mode and range it from the other with ≥&nbsp;200 valid exchanges; take the median. Do both directions and average them. Error per pair: e<sub>ij</sub> = median<sub>ij</sub> − d<sub>ij</sub>.</li>
+<li><b>Solve.</b> Range error per device: E<sub>A</sub> = (e<sub>AB</sub> + e<sub>AC</sub> − e<sub>BC</sub>)/2, E<sub>B</sub> = (e<sub>AB</sub> + e<sub>BC</sub> − e<sub>AC</sub>)/2, E<sub>C</sub> = (e<sub>AC</sub> + e<sub>BC</sub> − e<sub>AB</sub>)/2. Delay change per device: Δ = E / 2.346&nbsp;mm units in total, split evenly: TX += Δ/2 and RX += Δ/2. Write them with opcode 20.</li>
+<li><b>Iterate once.</b> Re-measure the three pairs; the residual should be under 2&nbsp;cm. Repeat step 3 on the residuals if not.</li>
+<li><b>Other anchors.</b> Range each one (as imposter) from a calibrated anchor. The whole error E = median − d belongs to the new anchor.</li>
+<li><b>Tags.</b> Range each tag at a known distance from a calibrated anchor (preferably two anchors; average them). E<sub>tag</sub> = median − d → TX/RX += E/(2 × 2.346&nbsp;mm) on the tag with opcode 20. Today that needs the tag on USB.</li>
+<li><b>Accept.</b> |median − d| &lt; 2&nbsp;cm at the calibration distance and &lt; 5&nbsp;cm at a second distance. Store the per-device values with date, temperature and firmware version in the analyzer.</li>
+</ol>
+<p><b>Over the air (proposed, not implemented):</b> calibrating a tag in place, at distance, needs the values pushed over UWB, which the tag listens to continuously.</p>
+<ul>
+<li>New anchor opcode 24 <code>TAG_CONFIG {tag_id, item, value}</code>.</li>
+<li>The anchor sends a UWB configuration frame with its own first-byte flag (as FOTA does). The tag checks the range, saves the value to flash, applies it and answers with the read-back.</li>
+<li>Items: TX/RX delay and crystal trim — values that cannot cut the link. The tag id is excluded.</li>
+<li>Older tags drop the frame (wrong length), and the anchor reports "no answer".</li>
+</ul>
+<p>Planned as anc3.2.1 / tag3.2.1. The analyzer step 6 then runs without a cable.</p>
+
+<div class="callout ok avoid-break">
+  <b>Bench results anc3.2.0 / tag3.2.0 (2026-10-22).</b>
   <ul style="margin:4px 0 0; padding-left:16px">
-    <li><b>Frames.</b> The legacy poll (12 bytes) and response (20 bytes) never change: an older tag drops any poll that is not 12 bytes and an older anchor any response over 20. With 9D on, the anchor sends legacy polls with byte 9 = <code>0x4C</code> (hello; <code>0xE0</code> before); a new tag answers with <code>0x80</code> set in response byte 9 (<code>0x40</code> too when it hears two stations). Only then does the anchor send the 17-byte extended poll <code>{seq, req_lora_dbm i8 (0x7F = none), req_uwb_level, confirm_seq, profile_req}</code> and the tag answer the 24-byte extended response <code>{ack_seq, lora_dbm i8 (0x7F = no LoRa), uwb_level, profile_used}</code>, flags in byte 9 (1 no LoRa, 2 quieter request pending, 4 two stations). Two unanswered extended polls, a legacy answer, 1&nbsp;s of silence or another tag id → legacy polls for 5&nbsp;s. A legacy poll always puts a new tag at maximum. Any old/new mix ranges exactly as before.</li>
-    <li><b>9D UWB is per exchange and per anchor:</b> the tag sends each response at the level that poll asked for and returns to maximum right after, so there is no shared state to get out of step. Louder at once; quieter one 3&nbsp;dB level after 2 good responses and <code>step_interval</code>; one miss → previous level, two → maximum. Boards with the 10&nbsp;dB maximum (HW ≠ 2) only have levels 0–3; the tag answers at its quietest and the anchor takes that as the floor.</li>
-    <li><b>9D/9J LoRa</b> has one owner anchor per station (opcode 22 byte 9 <code>lora_owner</code>, new): quieter steps go request (seq) → ack → confirm → proof, 5 tries each; louder at once; SNR &lt; −7&nbsp;dB (SF12 decodes to −20&nbsp;dB; 10&nbsp;dB margin after one more step; near compression the SX1262 reports only 3–4&nbsp;dB SNR) or signal more than 3 bands under target → maximum at once; no packet for 1.5&nbsp;s → maximum. Floor −9&nbsp;dBm. The tag drops a quieter step after 500&nbsp;ms and everything after 1&nbsp;s without the owner; requests from other anchors only count when louder. The SX126x driver no longer forces 22&nbsp;dBm in <code>SetTxParams</code> (clamps −9…22). The tag also acks in the UWB response only, not the LoRa beacon (its 6-byte format is fixed).</li>
-    <li><b>9F:</b> a miss ends the round; K = 1 with 9K. <b>9G:</b> RX−FP soft threshold 6&nbsp;dB (APS006), LOS preset = the opcode-14 value. <b>Both act only above −90&nbsp;dBm rx level</b>: near sensitivity (the km range) RX−FP is high from noise, the NLOS threshold and "keep the shortest of K" would select noise-triggered early paths and read short; weak ⇒ LOS preset and auto K = 1 (a host-pinned <code>k_max</code> still applies).</li>
-    <li><b>9I opcode 22</b> payload bytes 0–8 as tabled plus byte 9 <code>lora_owner</code>; a shorter payload sets the leading fields; empty = read; the reply is the 10-byte configuration. Bit6 off ⇒ DIAGNOSTIC_STATUS, SEARCH_TWR and STATUS keep their anc3.1.5 lengths. Bit6 on: DIAG 55 bytes; TWR 27 bytes (17–20 tick, 21 tag LoRa dBm, 22 tag UWB level, 23 SignalRssiPkt dBm, 24 <code>k_used</code>, 25 <code>profile_used</code>, 0xFF = unknown); STATUS gains the <code>link_state</code> block after the fault counters (payload 66–75: features, flags [1 extended frames, 2 LoRa owner, 4 handshake in flight, 8 reverting, 16 two stations/backoff], profile req, profile echo, req LoRa dBm, req UWB level, tag LoRa dBm, tag UWB level, LDE preset, k_used). <b>Host:</b> <code>unpack_status_reply</code>'s <code>len == 67</code> long-form test must become <code>&gt;= 67</code>. Opcode 21 reply: 136 bytes with the checksum, <code>n</code> = 0 when 9B is off or before the first range.</li>
     <li><b>Bench 2026-10-22 (FLY 4 anchors, MOB 3 anchors, tag3.2.0 HW 1).</b> Features off: same rates as anc3.1.5/sC3.0.70 on the same script; every old/new pairing ranges. LoRa loop: 4.4&nbsp;m behind a wall 22 → 0&nbsp;dBm, SignalRssi −50 → −66&nbsp;dBm; MOB at 1.1&nbsp;m from −26&nbsp;dBm (compressed) to −8&nbsp;dBm tag power, −48/−46/−44&nbsp;dBm at the three anchors — out of compression, spread kept, but <b>−70 is unreachable at 1&nbsp;m</b> (the SX1262 floor is −9&nbsp;dBm). Tag back at maximum ≈1.5&nbsp;s after the host stops. 9F/9G behind the wall: K=3 + NLOS preset p10–p90 4.20–4.35&nbsp;m, max 4.44 against 4.25–4.46, max 5.05 at K=1; +10&nbsp;ms per extra exchange. Two stations: both freeze, rates unchanged against features off.</li>
     <li><b>9D UWB has no usable close-range metric.</b> <code>rx_power_dbm</code> reads −78&nbsp;dBm at 1.2&nbsp;m line of sight and −77&nbsp;dBm at 4.4&nbsp;m behind a wall: the DW1000 estimate goes flat above ≈−85&nbsp;dBm true power (UM 4.7.2), and the AGC keeps the CIR peak at 17–19k counts at both. So the UWB loop never steps down; it fails safe (maximum, as today) but buys nothing. Needs a different input — e.g. a level schedule from the anchor's own range, calibrated against the APS011 bias at known distances — before 9D-UWB is worth enabling.</li>
-    <li><b>9K:</b> the tag tracks the PC ids of polls addressed to it (2&nbsp;s); the anchor also counts its own backoff arming. Either → legacy polls (same 12-byte airtime the §8 timings were tuned on), maximum, K = 1, no requests, until 2&nbsp;s without a sign of a second station.</li>
+    <li><b>Rev C vs Rev D tag:</b> identical radio configuration except <code>TX_POWER</code> (Rev D 30.5&nbsp;dB gain with the PA, Rev C 10&nbsp;dB) and <code>FS_XTALT</code>. The Rev C chip has an OTP crystal trim; the Rev D chip runs at mid-range and is consistently +2.0&nbsp;ppm off the Rev C tag at every anchor — corrected by the carrier integrator. Clocks are identical: same <code>SystemClock_Config</code>, 921600&nbsp;baud works on both.</li>
   </ul>
 </div>
 
@@ -585,6 +835,32 @@ _dwt_enableclocks(READ_ACC_OFF);</pre>
     <li><b>9D:</b> tag 1&nbsp;m from a MOB station: <code>SignalRssiPkt</code> settles in −70&nbsp;±&nbsp;6&nbsp;dBm within 3&nbsp;s and the Configuration tab's LoRa spread stops reading "compressed"; UWB <code>rx_power_dbm</code> settles in −80&nbsp;±&nbsp;5&nbsp;dBm and the raw bearing scatter at 1&nbsp;m drops from 12–14° to under 8°. Tag pulled to 50&nbsp;m: both back at maximum within 1&nbsp;s of the first missed frame.</li>
   </ul>
 </div>
+
+<h2 id="s10"><span class="num">§10</span> &nbsp;Bugs found outside this plan (fixed in anc3.2.0 / tag3.2.0)</h2>
+<p class="note">Found while implementing and testing §9 or from the 2026-10-22 review (<code>documentation/bugs/2026-10-22/buglist.md</code>, which has the full evidence). All fixed and bench-checked.</p>
+<table class="avoid-break">
+  <thead><tr><th style="width:150px">Bug</th><th>Effect</th><th>Fix</th></tr></thead>
+  <tbody>
+    <tr><td><b>Tag TX antenna delay ignored</b><br>tag <code>dwRange</code>, anchor <code>dwTagMode</code></td><td>The delayed response's TX timestamp used the compile-time <code>TX_ANT_DLY</code>, so a calibrated TX delay had no effect.</td><td>Use the applied delay. +100 units → −24.0&nbsp;cm, as expected.</td></tr>
+    <tr><td><b>LoRa power forced to 22&nbsp;dBm</b><br><code>SX126x::SetTxParams</code>, both</td><td>Every requested power was overwritten with 22.</td><td>Honour the value, clamped to −9…22. With nothing requested, 22&nbsp;dBm as before.</td></tr>
+    <tr><td><b>"1&nbsp;ms" tick was 2.05&nbsp;ms</b> (REC-006)<br><code>tim.c</code>, <code>.ioc</code>, both</td><td>TIM4 prescaler 1 (÷2) with period 160000 for an assumed 160&nbsp;MHz clock; the PLL runs 156&nbsp;MHz. Every <code>_1ms_tick</code> time was ×2.05.</td><td>PSC 155 / ARR 999 = 1&nbsp;kHz, measured 1.00. Real timings kept (8E). <code>HAL_GetTick</code> was always right (SysTick).</td></tr>
+    <tr><td><b>Hang with interrupts off</b> (REC-001)</td><td><code>Error_Handler</code> looped with interrupts off, bypassing the TIM4 watchdog. Anchor <code>Lora_Status</code> masked all interrupts around a BUSY wait.</td><td><code>Error_Handler</code> resets. <code>Lora_Status</code> masks only the DIO1 interrupt. DIO1 priority 1, below TIM4, so the watchdog preempts a stuck radio handler. Not added: a hardware IWDG — it keeps running into the bootloader, which does not refresh it.</td></tr>
+    <tr><td><b>Lost LoRa IRQ stalls LoRa</b> (REC-002)</td><td>A TX/RX completion interrupt that never came blocked LoRa for good while the watchdog stayed fed.</td><td>No event for 3&nbsp;s (radio timeouts ≈0.78&nbsp;s) → re-init and reconfigure the radio, keeping the TX power, then restart.</td></tr>
+    <tr><td><b><code>no_uwb</code> latched</b> (REC-003)</td><td>One bad DW1000 ID read on the tag disabled ranging until reset. The anchor cleared the flag even if init had failed.</td><td>Clear only on an initialised chip. <code>dwRecover()</code> retries every 5&nbsp;s with a full re-init.</td></tr>
+    <tr><td><b><code>rxError</code> latched</b> (REC-004), anchor</td><td>After one RX error, every main-loop pass restarted LoRa RX.</td><td>Consumed once per restart.</td></tr>
+    <tr><td><b>Backoff tick wrap</b> (REC-005), anchor</td><td>An expired deadline looked like a future one after the counter wrapped (49.7 days).</td><td>Wrap-safe compare; expired or implausible deadlines cleared every pass; never stores 0. Same fix in the hello hold and the tag's LoRa wake wait.</td></tr>
+    <tr><td><b>Stale flash read-back</b>, tag</td><td><code>Flash_Write</code> did not invalidate ICACHE: a new id or setting showed only after a reset.</td><td><code>Update_Cash_Mem()</code> after writes, as on the anchor.</td></tr>
+    <tr><td><b>LoRa SNR guard</b> (found on the bench)</td><td>Near compression the SX1262 reports only 3–4&nbsp;dB SNR at −50&nbsp;dBm, which blocked every power step.</td><td>Guard set from the demod limit: −7&nbsp;dB (SF12 decodes to −20; 10&nbsp;dB margin after one step).</td></tr>
+  </tbody>
+</table>
+<p class="note"><b>Findings, no change:</b></p>
+<ul class="note">
+<li>The DW1000 rx-level estimate is flat above ≈−85&nbsp;dBm (9D UWB).</li>
+<li>The RTC runs from LSI ÷128 = 250&nbsp;Hz with 32&nbsp;kHz prescalers, so its calendar would be 128× slow. Only its backup registers are used.</li>
+<li><code>port.c</code>'s SPI comment assumed a 160&nbsp;MHz base (corrected: 19.5&nbsp;MHz).</li>
+<li>Clock audit, both boards: HSE 12&nbsp;MHz → PLL1 156&nbsp;MHz, VOS1, 4 wait states; USART 923077&nbsp;baud (+0.16&nbsp;%); SPI DW1000 19.5 / 2.44&nbsp;MHz, SX1262 9.75&nbsp;MHz, BMI088 9.75&nbsp;MHz; I2C ~100&nbsp;kHz.</li>
+<li>The UWB time base is the DW1000's own 38.4&nbsp;MHz crystal, independent of all of the above.</li>
+</ul>
 
 <h2 id="s6"><span class="num">§6</span> &nbsp;Bench verification &amp; at-a-glance</h2>
 
