@@ -391,6 +391,20 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 
 
 
+// A UART line error (framing, noise, overrun, parity) aborts the DMA receive in the HAL and lands
+// here; without re-arming, the UART stays deaf until a power cycle. Drop the partial frame
+// (the host times out and resends) and start receiving again.
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+	if (huart->Instance == USART6 || huart->Instance == USART3)
+	{
+		__HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_OREF | UART_CLEAR_NEF | UART_CLEAR_FEF | UART_CLEAR_PEF);
+		uartIdle = false;
+		UART_RX_len = 0;
+		HAL_UARTEx_ReceiveToIdle_DMA(huart, UART_Buff, sizeof(UART_Buff));
+	}
+}
+
 //	Called from Main Loop
 int UART_GetMessage(uint8_t *buff, uint32_t buff_len) {
 	uint32_t RetVal = 0;

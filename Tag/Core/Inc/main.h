@@ -138,9 +138,10 @@ extern "C" {
  * tag3.1.1	[added] FOTA discovery, auto data-rate fallback, battery check
  * tag3.1.2	[added] FOTA LEDs: target blinks from the handshake, loader link LED while loading
  * tag3.1.3	[fixed] a tag stays awake while it counts down as FOTA target
+ * tag3.1.5	[added] backoff arm-once, release on opcode 19=0, runtime window {top,min}; status backoff in ms left; per-anchor random seed; imposter id mask; SET_ID refreshes UWB ids; UART error callback re-arms RX; antenna delays from flash (opcode 20); LDE_CFG1 survives dwConfig; status-bit clearing and frame-length checks
  */
 
-#define VERSION "tag3.1.3"
+#define VERSION "tag3.1.5"
 
 #define IS_TAG true
 

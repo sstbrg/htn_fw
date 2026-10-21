@@ -19,6 +19,12 @@ extern LoraRxInfo_t lora_rxInfo;
 extern DwmInfo_t dwmInfo;
 extern Fault_Counter fault_counter;
 extern uint8_t HW_Version;
+extern uint32_t _1ms_tick;
+
+// Backoff time left in ms; 0 once the deadline has passed, even before a SEARCH_TWR clears it.
+static uint32_t backoff_left_ms(void) {
+	return (dwmInfo.backoff_timer > _1ms_tick) ? (dwmInfo.backoff_timer - _1ms_tick) : 0;
+}
 extern I2C_HandleTypeDef hi2c2;
 
 
@@ -105,7 +111,7 @@ void UART_Reply_BIT_Control(S_UART_MESSAGE *msg, S_UART_MESSAGE *reply){
 	reply->op_bit_rply.tag_imposter = dwmInfo.tag_imposter;
 	//	errors
 	reply->op_bit_rply.errors.all = 0;
-	reply->op_bit_rply.errors.bits.UWB_Backoff = !!dwmInfo.backoff_timer;
+	reply->op_bit_rply.errors.bits.UWB_Backoff = (backoff_left_ms() != 0);
 	reply->op_bit_rply.errors.bits.no_LoRa = lora_rxInfo.no_lora;
 	reply->op_bit_rply.errors.bits.no_UWB = dwmInfo.no_uwb;
 	reply->op_bit_rply.errors.bits.no_IMU = bmi.no_IMU;
@@ -125,7 +131,7 @@ void UART_Reply_Wake_up(S_UART_MESSAGE *msg, S_UART_MESSAGE *reply)
 	reply->wakeup_rply.errors.all = 0;
 	reply->wakeup_rply.errors.bits.no_LoRa = lora_rxInfo.no_lora;
 	reply->wakeup_rply.errors.bits.no_UWB = dwmInfo.no_uwb;
-	reply->wakeup_rply.errors.bits.UWB_Backoff = !!dwmInfo.backoff_timer;
+	reply->wakeup_rply.errors.bits.UWB_Backoff = (backoff_left_ms() != 0);
 	reply->wakeup_rply.checksum = checksum((uint8_t*) reply, reply->header.length);
 
 	UART_SendMessage(reply, reply->header.length);
@@ -173,7 +179,7 @@ void UART_Reply_Search_Twr(S_UART_MESSAGE *msg, S_UART_MESSAGE *reply)
 	reply->op_twr_rply.errors.all = 0;
 	reply->op_twr_rply.errors.bits.no_LoRa = lora_rxInfo.no_lora;
 	reply->op_twr_rply.errors.bits.no_UWB = dwmInfo.no_uwb;
-	reply->op_twr_rply.errors.bits.UWB_Backoff = !!dwmInfo.backoff_timer;
+	reply->op_twr_rply.errors.bits.UWB_Backoff = (backoff_left_ms() != 0);
 	reply->op_twr_rply.errors.bits.wrong_UWB_ID = dwmInfo.wrong_ID;
 	reply->op_twr_rply.checksum = checksum((uint8_t*) reply, reply->header.length);
 
@@ -190,7 +196,7 @@ void UART_Reply_Status(S_UART_MESSAGE *msg, S_UART_MESSAGE *reply)
 	reply->op_stt_rply.is_tag = IS_TAG;
 	//	UWB
 	reply->op_stt_rply.UWB_tag_status = dwmInfo.tag_no_lora;
-	reply->op_stt_rply.UWB_backoff = dwmInfo.backoff_timer;
+	reply->op_stt_rply.UWB_backoff = backoff_left_ms();	// ms left, 0 = not backing off
 	reply->op_stt_rply.UWB_last_status_reg = dwmInfo.statusReg;
 
 	// LoRa

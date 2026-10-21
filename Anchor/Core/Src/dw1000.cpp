@@ -2,6 +2,7 @@
 #include "main.h"
 #include "uart_communication.h"
 #include "fota.h"
+#include "flash_handler.h"
 
 extern uint8_t HW_Version;
 
@@ -15,6 +16,10 @@ twr_anchor_msg_t tx_poll_msg;
 twr_tag_msg_t rx_resp_msg;
 twr_tag_msg_t tx_resp_msg;
 uint8_t dummy_buff[1024] = {0};
+
+uint16_t backoff_top_ms = TIME_TOP_RANGE_MS;
+uint16_t backoff_min_ms = MIN_BACKOFF_MS;
+uint8_t lde_cfg1 = 0x6D;	// LOS default; live-tunable via opcode 14 (LDE_IF_ID:LDE_CFG1_OFFSET)
 
 
 //accessing dw1000 quality buffers data
@@ -33,14 +38,26 @@ int dwmInit() {
 	}
 
 	dwmInfo.no_uwb = false;
-		//Anchor
-	tx_poll_msg.src = (dwmInfo.mine_pc_id << 2) | dwmInfo.anchor_id;
-
-		//Tag
-	rx_resp_msg.des = (dwmInfo.mine_pc_id << 2) | dwmInfo.anchor_id;
-	tx_resp_msg.src = (dwmInfo.mine_pc_id << 2) | dwmInfo.anchor_id;
+	dwSetFrameIds();
 
 	return 1;
+}
+
+void dwSetFrameIds(void) {
+	uint16_t id = (dwmInfo.mine_pc_id << 2) | dwmInfo.anchor_id;
+	tx_poll_msg.src = id;			// anchor poll
+	rx_resp_msg.des = id;			// expected tag response
+	// imposter response: bit 15 is the LoRa-only flag on the UART side and never part of an
+	// over-the-air id, so answer the id a poll can actually carry
+	tx_resp_msg.src = id & 0x7FFF;
+}
+
+// Antenna delays: self-id flash page slots 1 (TX) and 2 (RX); 0 or 0xFFFF = not calibrated
+void dwApplyAntennaDelays(void) {
+	const uint16_t *page = (const uint16_t*)FLASH_SELF_ID_ADDRESS;
+	uint16_t tx = page[1], rx = page[2];
+	dwt_settxantennadelay((tx == 0 || tx == 0xFFFF) ? TX_ANT_DLY : tx);
+	dwt_setrxantennadelay((rx == 0 || rx == 0xFFFF) ? RX_ANT_DLY : rx);
 }
 
 
@@ -109,9 +126,8 @@ void dwConfig(dwt_config_t *config) {
 	/* Configure DW1000. See NOTE 6 below. */
 	dwt_configure(config);
 
-	/* Apply default antenna delay value. See NOTE 2 below. */
-	dwt_setrxantennadelay(RX_ANT_DLY);
-	dwt_settxantennadelay(TX_ANT_DLY);
+	/* Antenna delays: per-device values from flash, else the defaults. See NOTE 2 below. */
+	dwApplyAntennaDelays();
 
 	dwt_setsmarttxpower(DISABLE);
 
@@ -121,7 +137,7 @@ void dwConfig(dwt_config_t *config) {
 
 #ifdef NEW_NTM
 			//set lower SNR for NLOS operation
-			dwt_write8bitoffsetreg(LDE_IF_ID, LDE_CFG1_OFFSET, 0x6D); //refer user manual pg.175
+			dwt_write8bitoffsetreg(LDE_IF_ID, LDE_CFG1_OFFSET, lde_cfg1); //refer user manual pg.175; keeps a live-tuned value
 			dwt_write16bitoffsetreg(LDE_IF_ID, LDE_CFG2_OFFSET, 0x0003); //refer user manual pg.177*/
 			//printf("0x2E = %x\n\r",dwt_read32bitreg(LDE_IF_ID));
 		#endif
@@ -202,16 +218,18 @@ void dwScanMode(void) {
 			}
 		}
 
-		if (dwmInfo.detec_pc_id == true){
-			dwmInfo.backoff_timer = 0;
-		}else{
-			dwmInfo.backoff_timer = _1ms_tick + random() % TIME_TOP_RANGE_MS + MIN_BACKOFF_MS; //TODO: [10ms - 200ms]
+		// Arm once per busy period: a running backoff is left alone by both own and foreign frames,
+		// so it always expires and the next SEARCH_TWR goes out (bounded wait). An expired
+		// deadline counts as idle and can re-arm on the next foreign frame.
+		bool running = (dwmInfo.backoff_timer != 0) && (dwmInfo.backoff_timer > _1ms_tick);
+		if (!dwmInfo.detec_pc_id && !running){
+			dwmInfo.backoff_timer = _1ms_tick + random() % backoff_top_ms + backoff_min_ms;
 		}
 
 	} else {
-		/* Clear RX error events in the DW1000 status register. */
+		/* Clear RX error events, and any latched good-RX bits, in the DW1000 status register. */
 		dwt_write32bitreg(SYS_STATUS_ID,
-				SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR);
+				SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR | SYS_STATUS_ALL_RX_GOOD);
 
 		/* Reset RX to properly reinitialise LDE operation. */
 		dwt_rxreset();
@@ -289,7 +307,7 @@ int dwRange(void) {
 
 		/* A frame has been received, read it into the local buffer. */
 		frame_len = dwt_read32bitreg(RX_FINFO_ID) & RX_FINFO_RXFLEN_MASK;
-		if (frame_len == sizeof(rx_buffer)) {
+		if (frame_len <= sizeof(rx_buffer)) {
 			dwt_readrxdata((uint8_t *)&rx_buffer, frame_len, 0);
 		}
 		else {
@@ -406,7 +424,7 @@ int dwRange(void) {
 
 		/* Check that the frame is a poll sent by "SS TWR initiator" example.
 		 * As the sequence number field of the frame is not relevant, it is cleared to simplify the validation of the frame. */
-		if (rx_buffer.des == tx_resp_msg.src) {
+		if (rx_buffer.des == tx_resp_msg.src) {	// src is the 15-bit id (dwSetFrameIds)
 			tx_resp_msg.des = rx_buffer.src;
 			uint32 resp_tx_time;
 			int ret;

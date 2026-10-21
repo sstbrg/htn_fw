@@ -34,6 +34,7 @@ OP_FOTA_ENTER, OP_FOTA_LOAD_BEGIN, OP_FOTA_LOAD_DATA, OP_FOTA_START = 0x40, 0x41
 OP_FOTA_STATUS, OP_FOTA_QUERY, OP_FOTA_ABORT, OP_FOTA_EXIT = 0x44, 0x45, 0x46, 0x47
 OP_FOTA_DISCOVER, OP_FOTA_DISCOVER_LIST = 0x48, 0x49
 OP_LED_TEST = 0x4B
+OP_ANT_DELAY = 20
 CHUNK = 128
 CRC_LEN = 255 * 8192
 APP_BASE = 0x08200000
@@ -397,6 +398,19 @@ def cmd_led_test(ser, a):
     return 0
 
 
+def cmd_antenna_delay(ser, a):
+    """Read or set the per-device antenna delays (DW1000 units, ~15.65 ps) stored in flash."""
+    payload = b"" if a.set is None else struct.pack("<HH", *a.set)
+    r = xfer(ser, OP_ANT_DELAY, payload)
+    if not r or r[0] != OP_ANT_DELAY or len(r[1]) < 5:
+        print("no reply: antenna delays need firmware 3.1.5+")
+        return 1
+    status, tx, rx = r[1][0], *struct.unpack_from("<HH", r[1], 1)
+    show = lambda v: "default" if v in (0, 0xFFFF) else str(v)
+    print(("write failed; " if status else "") + f"TX antenna delay {show(tx)}, RX antenna delay {show(rx)}")
+    return 1 if status else 0
+
+
 def cmd_fota_exit(ser, _a):
     fota_exit(ser)
     print("left FOTA flasher mode")
@@ -424,6 +438,8 @@ def main():
     d.add_argument("--stay", action="store_true")
     lt = sub.add_parser("led-test", help="light each board LED in turn to see which are fitted")
     lt.add_argument("--hold", type=float, default=1.5, help="seconds each LED stays on")
+    ad = sub.add_parser("antenna-delay", help="read or set per-device antenna delays (3.1.5+)")
+    ad.add_argument("--set", nargs=2, type=int, metavar=("TX", "RX"), help="0 or 65535 = default")
     sub.add_parser("fota-exit")
     sub.add_parser("selftest")
     a = ap.parse_args()
@@ -434,7 +450,8 @@ def main():
         return 0
     cmds = {"status": cmd_status, "flash": cmd_flash, "fota": cmd_fota, "query": cmd_query,
             "fota-exit": cmd_fota_exit,
-            "discover": cmd_discover, "led-test": cmd_led_test}
+            "discover": cmd_discover, "led-test": cmd_led_test,
+            "antenna-delay": cmd_antenna_delay}
     with serial.Serial(a.port, BAUD, timeout=0.05) as ser:
         try:
             return cmds[a.cmd](ser, a)

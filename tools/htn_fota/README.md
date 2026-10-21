@@ -127,6 +127,8 @@ $PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB0 fota 6 releases/anchor/3.1.4/An
 $PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB0 fota-exit         # leave FOTA loader mode
 $PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB0 flash releases/tag/3.1.3/Tag.bin   # over USB
 $PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB1 led-test          # which LEDs are fitted
+$PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB1 antenna-delay     # per-device UWB antenna delays (3.1.5+)
+$PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB1 antenna-delay --set 16550 16500
 ```
 
 `--port` is the loader (for `fota`, `discover`, `query`) or the board itself
@@ -194,6 +196,12 @@ LEDs, battery, UWB restore) are in each project's `fota_port.cpp`.
 | 0x48, 0x49 | discover targets, read the list |
 | 0x4B | LED test |
 | 0x4F | DW1000 SPI self-test |
+
+Other application opcodes added in 3.1.5: 19 (backoff control) takes an
+optional window `{ctrl, top_ms, min_ms}` (backoff = random() % top + min;
+default 200 / 10 ms) and 0 also releases an armed backoff; 20 reads or sets
+the per-device antenna delays kept in the self-id flash page (0 / 0xFFFF =
+built-in default).
 
 A tag stays awake while it counts down as a target. Minimum versions: FOTA
 target and loader 3.1.0, discovery 3.1.1, battery check on anchors 3.1.2.

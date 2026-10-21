@@ -400,7 +400,8 @@ typedef enum
 	/*15*/UART_OPCODE_UPDATE_FW,
 	/*16*/UART_OPCODE_RESET_RESET_COUNTER,
 	/*17*/UART_OPCODE_READ_RESET_COUNTER,
-	/*19*/UART_OPCODE_BACKOFF_CTRL = 19,	// control of dwScanMode. enable or disable
+	/*19*/UART_OPCODE_BACKOFF_CTRL = 19,	// control of dwScanMode. enable or disable; optional {top_ms, min_ms}
+	/*20*/UART_OPCODE_ANT_DELAY = 20,		// per-device antenna delays {tx, rx} in flash; empty = read
 
 	/*EE*/UART_OPCODE_ERROR = 0xEE,
 

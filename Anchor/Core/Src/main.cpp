@@ -40,6 +40,7 @@
 #include "flash_handler.h"
 #include "burn_mode.h"
 #include "fota.h"
+#include <stdlib.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -136,6 +137,40 @@ void printP(const char *s, const char *p) {
 //
 //	HAL_UART_Transmit(&huart1, buff, len, 100);
 }
+// Self-id flash page: slot 0 PC_ID, 1 TX antenna delay, 2 RX antenna delay, 7 reset counter.
+// Rewrites the page with slots 1-2 replaced; returns 0 on success.
+static uint8_t Save_Antenna_Delays(uint16_t tx, uint16_t rx) {
+	uint16_t page[8];
+	memcpy(page, (const void*)FLASH_SELF_ID_ADDRESS, sizeof(page));
+	page[1] = tx;
+	page[2] = rx;
+	if (Flash_Erase(FLASH_SELF_ID_USER_BANK, FLASH_SELF_ID_PAGE) != HAL_OK)
+		return 1;
+	return Flash_Write(FLASH_SELF_ID_ADDRESS, (uint64_t*)page, 1) != HAL_OK;
+}
+
+// UART_OPCODE_ANT_DELAY: {tx u16, rx u16} sets (0/0xFFFF = back to the default), empty = read.
+// Reply {status, tx u16, rx u16} with the values in flash (0xFFFF = default in use).
+static void Antenna_Delay_Command(S_UART_MESSAGE *msg, S_UART_MESSAGE *reply) {
+	static uint8_t r[8];
+	uint8_t status = 0;
+	if (msg->header.length >= sizeof(S_HEADER) + 4 + 1) {
+		uint16_t tx, rx;
+		memcpy(&tx, &msg->buff[0], 2);
+		memcpy(&rx, &msg->buff[2], 2);
+		status = Save_Antenna_Delays(tx, rx);
+		dwApplyAntennaDelays();
+	}
+	const uint16_t *page = (const uint16_t*)FLASH_SELF_ID_ADDRESS;
+	r[0] = msg->header.opcode;
+	r[1] = sizeof(r);
+	r[2] = status;
+	memcpy(&r[3], &page[1], 2);
+	memcpy(&r[5], &page[2], 2);
+	r[7] = checksum(r, sizeof(r));
+	UART_SendMessage(r, sizeof(r));
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -264,7 +299,8 @@ int main(void)
 
 			case UART_OPCODE_SET_ID: //PC id
 				{
-					uint16_t new_id[8] = {msg.set_id_req.new_id,0xFFFF,0xFFFF,0xFFFF,0xFFFF,0xFFFF,0xFFFF,reset_counter};
+					const uint16_t *page = (const uint16_t*)FLASH_SELF_ID_ADDRESS;	// keep the antenna delays
+					uint16_t new_id[8] = {msg.set_id_req.new_id,page[1],page[2],0xFFFF,0xFFFF,0xFFFF,0xFFFF,reset_counter};
 					uint8_t error;
 					error = Flash_Erase(FLASH_SELF_ID_USER_BANK, FLASH_SELF_ID_PAGE) != HAL_OK;
 					if (error){
@@ -274,6 +310,8 @@ int main(void)
 					error = Flash_Write(FLASH_SELF_ID_ADDRESS, (uint64_t*)&new_id, 1) != HAL_OK;
 					if(!error){ // updated self_id if writing to memory was successful
 						 SetAnchor_self_id();
+						 dwmInfo.mine_pc_id = PC_ID;	// UWB frames and backoff judging use the new id too
+						 dwSetFrameIds();
 					}
 					UART_Reply_Set_Self_ID(&msg, &reply, error);
 					break;
@@ -282,9 +320,15 @@ int main(void)
 				{
 					if(msg.op_backoff_ctrl_req.BackOFF_CTRL == 0){
 						BackOFF_CTRL = false;
+						dwmInfo.backoff_timer = 0;	// release an armed backoff: poll on the next SEARCH_TWR
 					}
 					else if (msg.op_backoff_ctrl_req.BackOFF_CTRL == 1){
 						BackOFF_CTRL = true;
+					}
+					// optional window: {ctrl, top_ms, min_ms}; backoff = random() % top + min
+					if (msg.header.length >= sizeof(S_HEADER) + 3 + 1 && msg.buff[1] != 0) {
+						backoff_top_ms = msg.buff[1];
+						backoff_min_ms = msg.buff[2];
 					}
 
 					UART_Reply_BackOFF_CTRL(&msg, &reply);
@@ -355,6 +399,10 @@ int main(void)
   			  	UART_Reply_Status_UWB_Diag(&msg, &reply);
   			  	break;
   			}
+  			case UART_OPCODE_ANT_DELAY: {
+  				Antenna_Delay_Command(&msg, &reply);
+  				break;
+  			}
   			case UART_OPCODE_LOOPBACK: {
   				UART_SendMessage(&msg, msg.header.length);
   				break;
@@ -373,6 +421,8 @@ int main(void)
   			}
   			case UART_OPCODE_WRITE_UWB_RAW:{
   				dwt_write8bitoffsetreg(msg.op_write_uwb_raw_req.reg_id, msg.op_write_uwb_raw_req.reg_offset,msg.op_write_uwb_raw_req.buffer[0]);
+  				if (msg.op_write_uwb_raw_req.reg_id == LDE_IF_ID && msg.op_write_uwb_raw_req.reg_offset == LDE_CFG1_OFFSET)
+  					lde_cfg1 = msg.op_write_uwb_raw_req.buffer[0];	// survives dwConfig() re-runs
   				UART_Reply_Write_UWB_Raw(&msg, &reply);
   				break;
   			}
@@ -532,6 +582,9 @@ static void MX_NVIC_Init(void)
 /* USER CODE BEGIN 4 */
 void main_init() {
 	SetAnchor_cable_id();
+	// per-anchor seed for the backoff random(): an unseeded sequence makes anchors that hear
+	// the same foreign frame pick the same backoff and collide round after round
+	srandom((unsigned)(PC_ID ^ (dwmInfo.anchor_id << 8) ^ HAL_GetTick() ^ HAL_GetUIDw0()));
 	write_clear_bkup_sram();
 	read_hw_version();
 	Init_Leds(HW_Version);

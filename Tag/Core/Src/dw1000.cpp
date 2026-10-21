@@ -152,9 +152,8 @@ void dwConfig(dwt_config_t *config) {
 	/* Configure DW1000. See NOTE 5 below. */
 	dwt_configure(config);
 
-	/* Apply default antenna delay value. See NOTE 2 below. */
-	dwt_setrxantennadelay(RX_ANT_DLY);
-	dwt_settxantennadelay(TX_ANT_DLY);
+	/* Antenna delays: per-device values from flash, else the defaults. See NOTE 2 below. */
+	dwApplyAntennaDelays();
 
 
 	dwt_setsmarttxpower(DISABLE);
@@ -178,6 +177,14 @@ void dwConfig(dwt_config_t *config) {
 	dwt_setfinegraintxseq(0);
 
 	dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_TXFRS); // to clear flag
+}
+
+// Antenna delays: self-id flash page slots 1 (TX) and 2 (RX); 0 or 0xFFFF = not calibrated
+void dwApplyAntennaDelays(void) {
+	const uint16_t *page = (const uint16_t*)FLASH_SELF_ID_ADDRESS;
+	uint16_t tx = page[1], rx = page[2];
+	dwt_settxantennadelay((tx == 0 || tx == 0xFFFF) ? TX_ANT_DLY : tx);
+	dwt_setrxantennadelay((rx == 0 || rx == 0xFFFF) ? RX_ANT_DLY : rx);
 }
 
 #ifdef TIMING_TESTS_USING_LED_GPIO
