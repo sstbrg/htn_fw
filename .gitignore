@@ -15,7 +15,7 @@ objects.list
 __pycache__/
 .venv/
 
-# Local firmware releases (tools/fw_release.py); published ones live in GitHub releases
+# Local firmware releases (tools/htn_fota/fw_release.py); published ones live in GitHub releases
 releases/
 
 # Eclipse / CubeIDE workspace state

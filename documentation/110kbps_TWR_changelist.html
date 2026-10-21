@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>110 kbps TWR Migration — Firmware Changelist</title>
+<style>
+  @page {
+    size: A4;
+    margin: 18mm 16mm 20mm 16mm;
+    @bottom-center { content: counter(page) " / " counter(pages); }
+  }
+  :root {
+    --ink:#1a1d23; --muted:#5b6470; --line:#dfe3e8; --soft:#f4f6f8;
+    --blocker:#c0392b; --blocker-bg:#fdecea;
+    --important:#b9770e; --important-bg:#fdf3e3;
+    --optional:#1f6f43; --optional-bg:#e9f6ee;
+    --none:#5b6470; --none-bg:#eef0f3;
+    --accent:#1d4ed8; --code-bg:#1e2330; --code-ink:#e6e9ef;
+  }
+  * { box-sizing:border-box; }
+  html { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  body {
+    font-family:"Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    color:var(--ink); font-size:10.2px; line-height:1.5; margin:0;
+  }
+  /* ---- cover header ---- */
+  .cover {
+    border-bottom:3px solid var(--accent); padding-bottom:14px; margin-bottom:18px;
+  }
+  .eyebrow { font-size:9px; letter-spacing:2.5px; text-transform:uppercase; color:var(--accent); font-weight:700; }
+  h1 { font-size:23px; margin:6px 0 4px; letter-spacing:-0.3px; }
+  .subtitle { color:var(--muted); font-size:11px; margin:0; }
+  .meta { margin-top:10px; font-size:9px; color:var(--muted); display:flex; gap:22px; flex-wrap:wrap; }
+  .meta b { color:var(--ink); font-weight:600; }
+
+  h2 {
+    font-size:13.5px; margin:22px 0 8px; padding-bottom:4px;
+    border-bottom:1.5px solid var(--line); letter-spacing:-0.2px;
+  }
+  h2 .tag { font-size:8.5px; font-weight:600; color:#fff; background:var(--accent);
+    border-radius:3px; padding:2px 7px; margin-left:8px; vertical-align:middle; letter-spacing:.5px; }
+  h3 { font-size:11px; margin:16px 0 6px; color:var(--ink); }
+
+  p { margin:5px 0; }
+  .lead { color:var(--muted); }
+
+  /* ---- callout ---- */
+  .callout {
+    background:var(--soft); border-left:3px solid var(--accent);
+    padding:9px 12px; border-radius:0 5px 5px 0; margin:10px 0; font-size:9.8px;
+  }
+  .callout.warn { border-left-color:var(--blocker); background:var(--blocker-bg); }
+
+  /* ---- tables ---- */
+  table { width:100%; border-collapse:collapse; margin:8px 0 4px; font-size:9.3px; }
+  thead th {
+    background:var(--ink); color:#fff; text-align:left; padding:6px 7px;
+    font-weight:600; font-size:8.6px; letter-spacing:.4px; text-transform:uppercase;
+  }
+  tbody td { padding:6px 7px; border-bottom:1px solid var(--line); vertical-align:top; }
+  tbody tr:nth-child(even) { background:#fafbfc; }
+  td.id { font-weight:700; color:var(--accent); white-space:nowrap; }
+  td.line { white-space:nowrap; font-family:"Consolas","SF Mono",monospace; font-size:8.8px; }
+  td.line a { color:var(--ink); text-decoration:none; border-bottom:1px dotted var(--muted); }
+  code, .mono { font-family:"Consolas","SF Mono","Menlo",monospace; font-size:8.8px;
+    background:#eef0f3; padding:1px 4px; border-radius:3px; }
+
+  /* ---- severity pills ---- */
+  .pill { display:inline-block; font-size:8px; font-weight:700; padding:2px 7px;
+    border-radius:10px; letter-spacing:.5px; text-transform:uppercase; }
+  .pill.blocker  { color:var(--blocker);  background:var(--blocker-bg);  }
+  .pill.important{ color:var(--important);background:var(--important-bg);}
+  .pill.optional { color:var(--optional); background:var(--optional-bg); }
+  .pill.none     { color:var(--none);     background:var(--none-bg);     }
+
+  /* ---- code blocks ---- */
+  pre {
+    background:var(--code-bg); color:var(--code-ink); border-radius:6px;
+    padding:11px 13px; font-family:"Consolas","SF Mono","Menlo",monospace;
+    font-size:8.7px; line-height:1.55; overflow:hidden; margin:8px 0;
+    white-space:pre-wrap;
+  }
+  pre .c { color:#7f8aa3; }      /* comment */
+  pre .k { color:#79b8ff; }      /* keyword/type */
+  pre .m { color:#f0a35e; }      /* macro/const */
+  pre .s { color:#9ece6a; }      /* string/number */
+  .codecap { font-size:8.4px; color:var(--muted); margin:-2px 0 10px 2px; }
+
+  /* ---- summary cards ---- */
+  .grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:9px; margin-top:8px; }
+  .card { border:1px solid var(--line); border-radius:6px; padding:9px 11px; }
+  .card .h { font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:.6px; margin-bottom:5px; }
+  .card.b .h { color:var(--blocker); } .card.i .h { color:var(--important); } .card.v .h { color:var(--optional); }
+  .card ul { margin:0; padding-left:14px; } .card li { margin:2px 0; font-size:8.8px; }
+
+  ul.tight { margin:4px 0; padding-left:16px; } ul.tight li { margin:2.5px 0; }
+  .note { font-size:8.6px; color:var(--muted); margin-top:4px; }
+  hr.soft { border:0; border-top:1px solid var(--line); margin:18px 0; }
+  .avoid-break { break-inside:avoid; }
+  .footer-id { font-size:8px; color:var(--muted); }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <div class="eyebrow">HITAN UWB · DW1000 SS-TWR Firmware</div>
+  <h1>Migration to 110&nbsp;kbps Two-Way Ranging</h1>
+  <p class="subtitle">Line-exact changelist for the Tag and Anchor firmware, grounded in the Decawave reference driver and DW1000 User Manual.</p>
+  <div class="meta">
+    <span><b>Target:</b> 850&nbsp;kbps → 110&nbsp;kbps</span>
+    <span><b>Radio (unchanged):</b> Ch&nbsp;2 · PRF&nbsp;64M · PLEN&nbsp;1024 · code&nbsp;9</span>
+    <span><b>Scheme:</b> Single-sided TWR</span>
+    <span><b>Date:</b> 2026-06-09</span>
+  </div>
+</div>
+
+<div class="callout warn">
+  <b>Why ranging breaks at 110&nbsp;kbps today.</b> The anchor computes <code>clockOffsetRatio</code> with
+  <code>FREQ_OFFSET_MULTIPLIER</code> (the 1024-sample constant). At 110&nbsp;kbps the carrier integrator accumulates
+  over <b>8192</b> samples, so the raw value is <b>8&times; larger</b> &mdash; the correction is over-applied,
+  <code>(1&nbsp;&minus;&nbsp;clockOffsetRatio)</code> swings negative, <code>rtd_resp&nbsp;&gt;&nbsp;rtd_init</code>,
+  and the time-of-flight goes negative. Removing <code>abs()</code> exposes the symptom; fixing the multiplier
+  (change&nbsp;<b>A5</b>) is the actual cure.
+</div>
+
+<p class="lead">Line numbers reference <span class="mono">documentation/fw_actual_ref/</span> (mirror of the source tree).
+Severity legend: <span class="pill blocker">blocker</span> ranging wrong/broken &nbsp;
+<span class="pill important">important</span> quality/reliability &nbsp;
+<span class="pill optional">optional</span> choice/verify.</p>
+
+<!-- ============ FILE 1 ============ -->
+<h2>File&nbsp;1 — Anchor configuration <span class="tag">anc/inc/dw1000.h</span></h2>
+<table class="avoid-break">
+  <thead><tr><th style="width:34px">#</th><th style="width:46px">Line</th><th>Current</th><th>Change to</th><th>Severity</th></tr></thead>
+  <tbody>
+    <tr><td class="id">A1</td><td class="line">126</td><td><code>DWT_BR_850K,</code></td><td><code>DWT_BR_110K,</code> &mdash; the data-rate switch.</td><td><span class="pill blocker">blocker</span></td></tr>
+    <tr><td class="id">A2</td><td class="line">128</td><td><code>1100 //(1024 + 64 - 32)</code></td><td><code>1058 // (1024+1+64&minus;32) 110k 64-sym SFD</code>. At 110k the SFD is 64 symbols; sized timeout is <code>PLEN+1+SFD&minus;PAC</code>. Any value &ge;1058 works.</td><td><span class="pill blocker">blocker</span></td></tr>
+    <tr><td class="id">A3</td><td class="line">231</td><td><code>RESP_RX_TIMEOUT_UUS 20000</code></td><td><code>RESP_RX_TIMEOUT_UUS 25000</code>. 110k frames are ~8&times; longer over the air; add multipath/offset headroom.</td><td><span class="pill important">important</span></td></tr>
+    <tr><td class="id">A4</td><td class="line">122</td><td><code>DWT_PAC32,</code></td><td><i>Leave as-is</i> &mdash; valid with PLEN_1024 (UM Table&nbsp;6). Verify only if preamble is shortened.</td><td><span class="pill none">verify</span></td></tr>
+  </tbody>
+</table>
+<p class="note"><b>Optional (must match Tag):</b> to use Decawave's more-robust 64-symbol SFD instead of standard IEEE, set <code>nsSFD</code> at line&nbsp;125 from <code>0,</code> → <code>1,</code> (UM Table&nbsp;21 recommends it for 110k). Both ends must agree.</p>
+
+<!-- ============ FILE 2 ============ -->
+<h2>File&nbsp;2 — Anchor code <span class="tag">anc/src/dw1000.cpp</span></h2>
+
+<h3>A5 &nbsp;<span class="pill blocker">blocker</span>&nbsp; Data-rate-aware carrier-integrator multiplier &nbsp;<span class="footer-id">(lines 296–298 — the root-cause fix)</span></h3>
+<pre><span class="c">/* was: uses the 1024-sample constant unconditionally */</span>
+<span class="k">double</span> freqOffsetMultiplier =
+        (config.dataRate == <span class="m">DWT_BR_110K</span>) ? <span class="m">FREQ_OFFSET_MULTIPLIER_110KB</span>
+                                         : <span class="m">FREQ_OFFSET_MULTIPLIER</span>;
+clockOffsetRatio = dwt_readcarrierintegrator()
+        * (freqOffsetMultiplier * <span class="m">HERTZ_TO_PPM_MULTIPLIER_CHAN_2</span> / <span class="s">1.0e6</span>);</pre>
+<p class="codecap"><code>config</code> is the file-static <code>dwt_config_t</code> from the header and is in scope here.
+850k and 6.8M correctly fall through to the 1024 constant — which is why 850k works today.</p>
+
+<h3>A6 &nbsp;<span class="pill blocker">blocker</span>&nbsp; Validity guard instead of <code>abs()</code> &nbsp;<span class="footer-id">(lines 309–312)</span></h3>
+<p>After A5 the value is physical, but at 110k you sit closer to the 32-bit timestamp wraparound ceiling (~67&nbsp;ms). A negative result now means a <i>bad</i> sample — reject it rather than fold it into a fake short range.</p>
+<pre><span class="k">double</span> tof = ((rtd_init - rtd_resp) / <span class="s">2.0</span>) * <span class="m">DWT_TIME_UNITS</span>;
+<span class="k">if</span> (tof &lt; <span class="s">0</span>) {                          <span class="c">// non-physical: clock/wraparound glitch</span>
+    dwmInfo.dw_ready = <span class="m">DW_NO_VALID_DATA</span>;     <span class="c">// drop the sample</span>
+} <span class="k">else</span> {
+    dwmInfo.tof      = tof;
+    dwmInfo.distance = dwmInfo.tof * <span class="m">SPEED_OF_LIGHT</span> * <span class="s">100</span>;
+    dwmInfo.dw_ready = <span class="m">VALID_DATA</span>;
+    dwt_readdiagnostics(&amp;dwmInfo.diagnostics);
+    dwmInfo.wrong_ID = <span class="k">false</span>;
+}</pre>
+<p class="codecap">Minimal alternative: simply restore <code>abs()</code>. Once A5 is in, <code>abs()</code> only fires on rare wraparound and no longer masks a calibration bug — but the guard above is better because it discards the glitch instead of reporting a wrong distance.</p>
+<p class="note"><b>No change</b> at lines 118–119 (<code>dwt_setrxaftertxdelay</code>/<code>dwt_setrxtimeout</code>) beyond A3 — they already read the macros. <code>dwt_configure()</code> (line&nbsp;98) auto-applies <code>SYS_CFG_RXM110K</code>, <code>LDE_REPC&divide;8</code>, <code>DRX_TUNE0b</code>, <code>DRX_TUNE1b_110K</code> from the enum.</p>
+
+<!-- ============ FILE 3 ============ -->
+<h2>File&nbsp;3 — Tag configuration <span class="tag">tag/src/dw1000.cpp</span></h2>
+<p class="note">The Tag's active <code>config</code> struct lives in the <code>.cpp</code> (lines 40–50), not the header.</p>
+<table class="avoid-break">
+  <thead><tr><th style="width:34px">#</th><th style="width:46px">Line</th><th>Current</th><th>Change to</th><th>Severity</th></tr></thead>
+  <tbody>
+    <tr><td class="id">T1</td><td class="line">47</td><td><code>DWT_BR_850K,</code></td><td><code>DWT_BR_110K,</code> &mdash; <b>must match anchor A1</b> or ranging stops entirely (UM Table&nbsp;21: RX = TX).</td><td><span class="pill blocker">blocker</span></td></tr>
+    <tr><td class="id">T2</td><td class="line">49</td><td><code>1100 //(1024 + 1 + 16)</code></td><td><code>1058 // (1024+1+64&minus;32) 110k 64-sym SFD</code> &mdash; match A2.</td><td><span class="pill blocker">blocker</span></td></tr>
+    <tr><td class="id">T3</td><td class="line">46</td><td><code>0,</code> (nsSFD)</td><td>Set to <code>1,</code> <i>only if</i> you chose the optional DW SFD on the anchor. SFD type must be identical on both ends.</td><td><span class="pill optional">optional</span></td></tr>
+    <tr><td class="id">T4</td><td class="line">43</td><td><code>DWT_PAC32,</code></td><td><i>Leave as-is</i> — valid with PLEN_1024.</td><td><span class="pill none">verify</span></td></tr>
+  </tbody>
+</table>
+
+<!-- ============ FILE 4 ============ -->
+<h2>File&nbsp;4 — Tag header <span class="tag">tag/Inc/dw1000.h</span></h2>
+<table class="avoid-break">
+  <thead><tr><th style="width:34px">#</th><th style="width:46px">Line</th><th>Current</th><th>Change to</th><th>Severity</th></tr></thead>
+  <tbody>
+    <tr><td class="id">T5</td><td class="line">84</td><td><code>TIMEOUT_PACS 1024/32*2</code></td><td><code>TIMEOUT_PACS (1024/32*4)</code>. Preamble-detect timeout (PAC units), used at <code>dw1000.cpp:132 &amp; 284</code>. At 110k the receiver hunts longer; widen to ~4 preambles. Tune empirically.</td><td><span class="pill important">important</span></td></tr>
+    <tr><td class="id">T6</td><td class="line">138</td><td><code>POLL_RX_TO_RESP_TX_DLY_UUS 2000</code></td><td><i>Keep ~2000.</i> Contributes to round-trip time; keep total well under ~67&nbsp;ms (32-bit wraparound limit, see A6). <b>Do not increase</b> at 110k without re-checking that margin.</td><td><span class="pill optional">verify</span></td></tr>
+  </tbody>
+</table>
+<p class="note"><b>No change</b> to antenna delays (tag 92–93 = 16500/16500; anchor 149–150 = 16550/16500) — antenna delay is data-rate independent (APS014). TX power, AGC, channel/PRF/preamble code all unchanged.</p>
+
+<hr class="soft">
+
+<!-- ============ SUMMARY ============ -->
+<h2>At a glance</h2>
+<div class="grid avoid-break">
+  <div class="card b">
+    <div class="h">Mandatory</div>
+    <ul>
+      <li><b>A5</b> — 110k carrier-integrator multiplier <i>(the fix)</i></li>
+      <li><b>A1 + T1</b> — <code>DWT_BR_110K</code> on both</li>
+      <li><b>A2 + T2</b> — 64-sym SFD timeout on both</li>
+      <li><b>A6</b> — validity guard / <code>abs()</code> decision</li>
+    </ul>
+  </div>
+  <div class="card i">
+    <div class="h">Important</div>
+    <ul>
+      <li><b>A3</b> — wider <code>RESP_RX_TIMEOUT_UUS</code></li>
+      <li><b>T5</b> — wider <code>TIMEOUT_PACS</code></li>
+    </ul>
+  </div>
+  <div class="card v">
+    <div class="h">Verify / decide</div>
+    <ul>
+      <li><b>A4 + T4</b> — PAC stays 32 (OK w/ PLEN1024)</li>
+      <li><b>T3</b> + nsSFD — std vs DW 64-sym SFD; must match</li>
+      <li><b>T6</b> — keep tag reply delay small</li>
+    </ul>
+  </div>
+</div>
+
+<div class="callout">
+  <b>Auto-handled by <code>dwt_configure()</code> — no code change:</b>
+  <code>SYS_CFG_RXM110K</code>, <code>LDE_REPC&divide;8</code>, <code>DRX_TUNE0b</code>, <code>DRX_TUNE1b_110K</code>.
+  &nbsp;<b>Host-side (outside firmware):</b> <span class="mono">rf_diagnostics.py</span> hard-codes the 8-symbol SFD
+  adjustment (<code>SFD_ADJ_STD_8</code>); at 110k it should be <code>SFD_ADJ_DW_64</code> for correct RX/FP
+  <i>power</i> readouts. Does not affect distance.
+</div>
+
+<p class="note" style="margin-top:14px">Basis for the 8&times; factor: the two header macros differ only by their divisor
+(<code>1024</code> vs <code>8192</code>), and DW1000 User Manual §7.2.40.11 (DRX_CAR_INT) states
+<code>N<sub>samples</sub> = 8192 for 110&nbsp;kb/s, 1024 otherwise</code>. Verified against
+<span class="mono">deca_device_api.h</span> and <span class="mono">deca_device.c</span>.</p>
+
+</body>
+</html>

@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>HITAN DW1000 Firmware — Consolidated Code Changes</title>
+<style>
+  @page {
+    size: A4;
+    margin: 16mm 15mm 18mm 15mm;
+    @bottom-center { content: counter(page) " / " counter(pages); }
+  }
+  :root {
+    --ink:#1a1d23; --muted:#5b6470; --line:#dfe3e8; --soft:#f4f6f8;
+    --blocker:#c0392b; --blocker-bg:#fdecea;
+    --important:#b9770e; --important-bg:#fdf3e3;
+    --optional:#1f6f43; --optional-bg:#e9f6ee;
+    --none:#5b6470; --none-bg:#eef0f3;
+    --accent:#1d4ed8; --code-bg:#1e2330; --code-ink:#e6e9ef;
+  }
+  * { box-sizing:border-box; }
+  html { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  body { font-family:"Segoe UI","Helvetica Neue",Arial,sans-serif; color:var(--ink); font-size:10px; line-height:1.5; margin:0; }
+  .cover { border-bottom:3px solid var(--accent); padding-bottom:13px; margin-bottom:16px; }
+  .eyebrow { font-size:9px; letter-spacing:2.5px; text-transform:uppercase; color:var(--accent); font-weight:700; }
+  h1 { font-size:22px; margin:6px 0 4px; letter-spacing:-0.3px; }
+  .subtitle { color:var(--muted); font-size:10.5px; margin:0; }
+  .meta { margin-top:9px; font-size:8.8px; color:var(--muted); display:flex; gap:20px; flex-wrap:wrap; }
+  .meta b { color:var(--ink); font-weight:600; }
+  h2 { font-size:13px; margin:20px 0 7px; padding-bottom:4px; border-bottom:1.5px solid var(--line); letter-spacing:-0.2px; }
+  h2 .num { color:var(--accent); }
+  h3 { font-size:10.7px; margin:14px 0 5px; color:var(--ink); }
+  h3 .where { font-family:"Consolas","SF Mono",monospace; font-size:8.6px; color:var(--muted); font-weight:400; }
+  p { margin:5px 0; } .lead { color:var(--muted); }
+  .callout { background:var(--soft); border-left:3px solid var(--accent); padding:9px 12px; border-radius:0 5px 5px 0; margin:10px 0; font-size:9.5px; }
+  .callout.warn { border-left-color:var(--blocker); background:var(--blocker-bg); }
+  .callout.ok { border-left-color:var(--optional); background:var(--optional-bg); }
+  table { width:100%; border-collapse:collapse; margin:8px 0 4px; font-size:9px; }
+  thead th { background:var(--ink); color:#fff; text-align:left; padding:5px 7px; font-weight:600; font-size:8.4px; letter-spacing:.4px; text-transform:uppercase; }
+  tbody td { padding:5px 7px; border-bottom:1px solid var(--line); vertical-align:top; }
+  tbody tr:nth-child(even) { background:#fafbfc; }
+  td.id { font-weight:700; color:var(--accent); white-space:nowrap; }
+  td.line { white-space:nowrap; font-family:"Consolas","SF Mono",monospace; font-size:8.6px; }
+  code, .mono { font-family:"Consolas","SF Mono","Menlo",monospace; font-size:8.6px; background:#eef0f3; padding:1px 4px; border-radius:3px; }
+  .pill { display:inline-block; font-size:7.6px; font-weight:700; padding:2px 6px; border-radius:10px; letter-spacing:.5px; text-transform:uppercase; }
+  .pill.blocker  { color:var(--blocker);  background:var(--blocker-bg);  }
+  .pill.important{ color:var(--important);background:var(--important-bg);}
+  .pill.optional { color:var(--optional); background:var(--optional-bg); }
+  .pill.none     { color:var(--none);     background:var(--none-bg);     }
+  pre { background:var(--code-bg); color:var(--code-ink); border-radius:6px; padding:10px 12px; font-family:"Consolas","SF Mono","Menlo",monospace; font-size:8.5px; line-height:1.5; margin:7px 0; white-space:pre-wrap; }
+  pre .c { color:#7f8aa3; } pre .k { color:#79b8ff; } pre .m { color:#f0a35e; } pre .s { color:#9ece6a; } pre .add { color:#9ece6a; font-weight:700; }
+  .codecap { font-size:8.2px; color:var(--muted); margin:-2px 0 9px 2px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:9px; margin-top:8px; }
+  .grid3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:9px; margin-top:8px; }
+  .card { border:1px solid var(--line); border-radius:6px; padding:9px 11px; }
+  .card .h { font-size:8.8px; font-weight:700; text-transform:uppercase; letter-spacing:.6px; margin-bottom:5px; }
+  .card.b .h { color:var(--blocker); } .card.i .h { color:var(--important); } .card.v .h { color:var(--optional); }
+  .card ul { margin:0; padding-left:14px; } .card li { margin:2px 0; font-size:8.6px; }
+  .note { font-size:8.4px; color:var(--muted); margin-top:4px; }
+  hr.soft { border:0; border-top:1px solid var(--line); margin:16px 0; }
+  .avoid-break { break-inside:avoid; }
+  .footer-id { font-size:8px; color:var(--muted); }
+  .toc { font-size:9px; columns:2; column-gap:24px; margin:6px 0; }
+  .toc a { color:var(--ink); text-decoration:none; }
+  .toc .pill { margin-left:4px; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <div class="eyebrow">HITAN UWB · DW1000 SS-TWR Firmware</div>
+  <h1>Consolidated Firmware Code Changes</h1>
+  <p class="subtitle">110&nbsp;kbps long-range migration, errata workarounds, the Rev-D receive-path fix, and multi-station UWB backoff — line-exact, grounded in the Decawave reference driver, DW1000 User Manual, and application notes.</p>
+  <div class="meta">
+    <span><b>Scope:</b> Tag + Anchor <code>dw1000.cpp</code>/<code>.h</code>; §8 also <code>main.cpp</code>, <code>uart_communication.c</code></span>
+    <span><b>Reference tree:</b> <code>documentation/fw_actual_ref/</code> (§8: 2026-09-23 anchor backup, <code>sC3.0.67</code>)</span>
+    <span><b>Scheme:</b> SS-TWR · Ch&nbsp;2 · PRF&nbsp;64M · PLEN&nbsp;2048 · PAC64 · code&nbsp;9</span>
+    <span><b>Date:</b> 2026-06-09 · <b>§8 added:</b> 2026-10-13</span>
+  </div>
+</div>
+
+<div class="callout warn">
+  <b>Read first — the Rev-D long-range problem is a RECEIVE problem, not a logic problem.</b>
+  Bench A/B test: <b>Rev-D&nbsp;TX&nbsp;→&nbsp;Skylab&nbsp;RX works at 2&nbsp;km+</b>, but <b>Skylab&nbsp;TX&nbsp;→&nbsp;Rev-D&nbsp;RX fails at ~400&nbsp;m</b>.
+  A directional fault rules out the TWR math, the protocol handshake, and timing (those would be symmetric). The fault is in Rev-D's
+  receive chain. The leading firmware cause is <b>§3 (GPIO clocks never enabled → external RX LNA never switched in)</b> — verify it
+  on the bench <i>before</i> assuming a hardware redesign.
+</div>
+
+<p class="lead">Severity: <span class="pill blocker">blocker</span> ranging wrong/broken &middot;
+<span class="pill important">important</span> quality / range margin &middot;
+<span class="pill optional">optional</span> choice / verify. Each change cites the exact current line; "&rarr;" shows the replacement.</p>
+
+<div class="toc">
+  <a href="#s1">§1 &nbsp;110 kbps data-rate migration</a> <span class="pill blocker">blocker</span><br>
+  <a href="#s2">§2 &nbsp;TX-1 errata — delayed-TX clock</a> <span class="pill important">important</span><br>
+  <a href="#s3">§3 &nbsp;Rev-D RX deafness — GPIO/LNA</a> <span class="pill blocker">blocker</span><br>
+  <a href="#s4">§4 &nbsp;Long-range link-budget hardening</a> <span class="pill important">important</span><br>
+  <a href="#s5">§5 &nbsp;Robustness / verify</a> <span class="pill optional">optional</span><br>
+  <a href="#s7">§7 &nbsp;LDE algorithm tuning (weak-signal)</a> <span class="pill optional">experiment</span><br>
+  <a href="#s8">§8 &nbsp;Multi-station UWB backoff (two systems, one tag)</a> <span class="pill blocker">blocker</span><br>
+  <a href="#s6">§6 &nbsp;Bench checklist + at-a-glance</a>
+</div>
+
+<!-- ====================== SECTION 1 — 110k ====================== -->
+<h2 id="s1"><span class="num">§1</span> &nbsp;110 kbps data-rate migration</h2>
+<p class="note">Switches the radio from 850 kbps to 110 kbps for greater RX sensitivity / range. Apply <b>identically on Tag and Anchor</b> — UM Table 21: the receiver must use the same data-rate/SFD config as the transmitter, or ranging stops entirely.</p>
+<div class="callout ok">
+  <b>Preamble length: go to 2048, not 1024.</b> UM <b>Table 57 (Recommended preamble lengths)</b>: 110&nbsp;kbps → <b>2048 or 4096</b>
+  (850&nbsp;kbps → 256/512/1024; 1024 is the <i>top of the 850k range</i>, below the 110k floor). For a max-range 110k system use
+  <b>PLEN_2048</b>, which per UM <b>Table 6</b> requires <b>PAC64</b>. The firmware author already anticipated this — the commented block at
+  <code>anc/inc/dw1000.h:133–144</code> is exactly DWT_PLEN_2048 / DWT_PAC64 / DWT_BR_110K. A longer preamble adds airtime (drives the
+  timeout values up, below) and slightly lengthens the round-trip — still far under the ~67&nbsp;ms 32-bit wraparound limit (1B), so it is safe; just keep the reply delays tight.</div>
+
+<h3>1A &nbsp;<span class="pill blocker">blocker</span>&nbsp; Carrier-integrator multiplier <span class="where">— anc/src/dw1000.cpp:296–298 — the root-cause fix for negative clockOffsetRatio</span></h3>
+<pre><span class="c">/* current: 1024-sample constant used unconditionally */</span>
+clockOffsetRatio = dwt_readcarrierintegrator()
+        * (<span class="m">FREQ_OFFSET_MULTIPLIER</span> * <span class="m">HERTZ_TO_PPM_MULTIPLIER_CHAN_2</span> / <span class="s">1.0e6</span>);
+
+<span class="c">/* &rarr; data-rate-aware: 110k accumulates over 8192 samples, not 1024 (8x larger) */</span>
+<span class="add k">double</span><span class="add"> freqOffsetMultiplier =</span>
+<span class="add">        (config.dataRate == </span><span class="m">DWT_BR_110K</span><span class="add">) ? </span><span class="m">FREQ_OFFSET_MULTIPLIER_110KB</span>
+<span class="add">                                         : </span><span class="m">FREQ_OFFSET_MULTIPLIER</span><span class="add">;</span>
+clockOffsetRatio = dwt_readcarrierintegrator()
+        * (<span class="add">freqOffsetMultiplier</span> * <span class="m">HERTZ_TO_PPM_MULTIPLIER_CHAN_2</span> / <span class="s">1.0e6</span>);</pre>
+<p class="codecap">Basis: the two header macros differ only by divisor (1024 vs 8192); UM §7.2.40.11 states <code>N<sub>samples</sub> = 8192 for 110 kb/s, 1024 otherwise</code>. <code>config</code> is the file-static <code>dwt_config_t</code> from the header (in scope). 850k/6.8M correctly fall through to the 1024 macro — which is why 850k works today.</p>
+
+<h3>1B &nbsp;<span class="pill blocker">blocker</span>&nbsp; Reject non-physical ToF <span class="where">— anc/src/dw1000.cpp:309–312 (you already removed abs())</span></h3>
+<pre><span class="c">/* current (after your edit): negative tof now propagates as negative distance */</span>
+dwmInfo.tof = ((rtd_init - rtd_resp) / <span class="s">2.0</span>) * <span class="m">DWT_TIME_UNITS</span>;
+dwmInfo.distance = dwmInfo.tof * <span class="m">SPEED_OF_LIGHT</span> * <span class="s">100</span>;
+dwmInfo.dw_ready = <span class="m">VALID_DATA</span>;
+
+<span class="c">/* &rarr; guard: a negative result means a clock/wraparound glitch — drop it, don't report it */</span>
+<span class="k">double</span> tof = ((rtd_init - rtd_resp) / <span class="s">2.0</span>) * <span class="m">DWT_TIME_UNITS</span>;
+<span class="add k">if</span><span class="add"> (tof &lt; </span><span class="s">0</span><span class="add">) {</span>
+<span class="add">    dwmInfo.dw_ready = </span><span class="m">DW_NO_VALID_DATA</span><span class="add">;        </span><span class="c">// non-physical: discard</span>
+<span class="add">} </span><span class="k">else</span><span class="add"> {</span>
+<span class="add">    dwmInfo.tof = tof;</span>
+<span class="add">    dwmInfo.distance = dwmInfo.tof * </span><span class="m">SPEED_OF_LIGHT</span><span class="add"> * </span><span class="s">100</span><span class="add">;</span>
+<span class="add">    dwmInfo.dw_ready = </span><span class="m">VALID_DATA</span><span class="add">;</span>
+<span class="add">    dwt_readdiagnostics(&amp;dwmInfo.diagnostics);  dwmInfo.wrong_ID = </span><span class="k">false</span><span class="add">;</span>
+<span class="add">}</span></pre>
+<p class="codecap">At 110k the round-trip sits closer to the 32-bit timestamp wraparound ceiling (~67 ms). Once 1A is correct, negatives are rare glitches — reject them rather than fold to a fake short range (or, minimal: just restore <code>abs()</code>).</p>
+
+<h3>1C–1H &nbsp;<span class="pill blocker">blocker</span>&nbsp; Config + timeout constants <span class="where">— both files, apply symmetrically</span></h3>
+<table class="avoid-break">
+  <thead><tr><th style="width:30px">#</th><th style="width:150px">Location</th><th>Current</th><th>Change to</th></tr></thead>
+  <tbody>
+    <tr><td class="id">1C</td><td class="line">anc/inc/dw1000.h:126<br>tag/src/dw1000.cpp:47</td><td><code>DWT_BR_850K,</code></td><td><code>DWT_BR_110K,</code></td></tr>
+    <tr><td class="id">1D</td><td class="line">anc/inc/dw1000.h:121<br>tag/src/dw1000.cpp:42</td><td><code>DWT_PLEN_1024,</code></td><td><code>DWT_PLEN_2048,</code> — UM Table 57 recommends 2048/4096 for 110k.</td></tr>
+    <tr><td class="id">1E</td><td class="line">anc/inc/dw1000.h:122<br>tag/src/dw1000.cpp:43</td><td><code>DWT_PAC32,</code></td><td><code>DWT_PAC64,</code> — UM Table 6: preamble &gt;1024 → PAC64.</td></tr>
+    <tr><td class="id">1F</td><td class="line">anc/inc/dw1000.h:128<br>tag/src/dw1000.cpp:49</td><td><code>1100</code> (sfdTO)</td><td><code>2049</code> — <code>(2048+1+64&minus;64)</code>, 110k 64-symbol SFD at PLEN_2048. Any value &ge;2049.</td></tr>
+    <tr><td class="id">1G</td><td class="line">anc/inc/dw1000.h:231</td><td><code>RESP_RX_TIMEOUT_UUS 20000</code></td><td><code>25000</code> — its comment already says "preamble 2048"; bump for multipath margin.</td></tr>
+    <tr><td class="id">1H</td><td class="line">tag/Inc/dw1000.h:84</td><td><code>TIMEOUT_PACS 1024/32*2</code></td><td><code>(2048/64*4)</code> — recomputed for PLEN_2048/PAC64; ×4 widens the preamble-detect hunt for weak long-range signal.</td></tr>
+  </tbody>
+</table>
+<p class="note"><b>Auto-handled by <code>dwt_configure()</code> — no code:</b> <code>SYS_CFG_RXM110K</code>, <code>LDE_REPC&divide;8</code>, <code>DRX_TUNE0b</code>, <code>DRX_TUNE1b_110K</code>, and <code>DRX_TUNE2</code> (indexed by PRF×PAC — picks up PAC64 automatically). &nbsp;<b>Optional:</b> for the more-robust Decawave 64-symbol SFD set <code>nsSFD</code> from <code>0</code>→<code>1</code> at anc/inc/dw1000.h:125 and tag/src/dw1000.cpp:46 (the author's commented 2048 block uses nsSFD=1) — must match on both ends (UM Table 21).</p>
+
+<!-- ====================== SECTION 2 — TX-1 ====================== -->
+<h2 id="s2"><span class="num">§2</span> &nbsp;TX-1 errata — force TX clock before delayed transmit</h2>
+<h3>2A &nbsp;<span class="pill important">important</span>&nbsp; Enable TX clock before each delayed <code>dwt_starttx</code> <span class="where">— tag/src/dw1000.cpp:241 &amp; anc/src/dw1000.cpp:411</span></h3>
+<pre><span class="c">/* current: delayed TX issued without the errata workaround */</span>
+ret = dwt_starttx(<span class="m">DWT_START_TX_DELAYED</span>);
+
+<span class="c">/* &rarr; force TX clock on first (PMSC_CTRL0 bits 5,4 = 1,0) */</span>
+<span class="add">dwt_write8bitoffsetreg(</span><span class="m">PMSC_ID</span><span class="add">, </span><span class="m">PMSC_CTRL0_OFFSET</span><span class="add">,</span>
+<span class="add">    dwt_read8bitoffsetreg(</span><span class="m">PMSC_ID</span><span class="add">, </span><span class="m">PMSC_CTRL0_OFFSET</span><span class="add">) | </span><span class="s">0x20</span><span class="add">);  </span><span class="c">// TXCLKS = 125MHz</span>
+ret = dwt_starttx(<span class="m">DWT_START_TX_DELAYED</span>);</pre>
+<p class="codecap">Errata §3.1.3 (verbatim): <i>"If the TX clock is enabled (PMSC_CTRL0 bits 5,4 set to 1,0 - force TX clock on) before the delayed TX command is issued then the problem does not happen."</i> The stock <code>dwt_starttx()</code> does not do this — it is the wrapper's job and is currently absent. A silently-failed delayed TX means the responder never replies → lost exchange; costs frames at the range edge where you can least afford them. Affects both SS-TWR response transmissions.</p>
+
+<!-- ====================== SECTION 3 — Rev-D RX deafness ====================== -->
+<h2 id="s3"><span class="num">§3</span> &nbsp;Rev-D receive deafness — enable GPIO clocks for the external LNA</h2>
+<div class="callout warn">
+  <b>Leading suspected root cause of the Rev-D long-range failure.</b> <code>dwt_setlnapamode(...|DWT_LNA_ENABLE)</code> configures
+  <b>GPIO6&nbsp;=&nbsp;EXTRXE</b> to switch in the external RX LNA — but the firmware <b>never calls
+  <code>dwt_enablegpioclocks()</code></b>, and <code>dwt_setleds()</code> enables only the de-bounce clock (GPDCE), not the GPIO
+  clock (GPCE/GPRN). UM §7.2.39: <i>"the GPIO clocks need to be turned on, before enabling or disabling the GPIO mode or value
+  … by setting GPCE and GPRN in PMSC_CTRL0."</i> If the GPIO write doesn't take effect, EXTRXE never asserts, the Rev-D LNA is
+  bypassed, and the receiver is deaf — exactly matching <b>RX-only, board-specific</b> (Skylab's integrated front-end doesn't depend on EXTRXE).
+</div>
+<h3>3A &nbsp;<span class="pill blocker">blocker</span>&nbsp; Add <code>dwt_enablegpioclocks()</code> after <code>dwt_setlnapamode()</code> <span class="where">— tag/src/dw1000.cpp:113 &amp; anc/src/dw1000.cpp:93</span></h3>
+<pre>dwt_setlnapamode(<span class="m">DWT_PA_ENABLE</span> | <span class="m">DWT_LNA_ENABLE</span>);
+<span class="add">dwt_enablegpioclocks();  </span><span class="c">// REQUIRED: sets PMSC_CTRL0 GPCE|GPRN so EXTRXE (GPIO6) actually drives the LNA</span></pre>
+<p class="codecap">One line, both files. APS004 §2: GPIO6/EXTRXE <i>"goes high when the DW1000 is in receive mode"</i> and (reference schematic) drives the RX-path RF switch into the LNA. This fix is curative <b>only if Rev-D's LNA is gated by EXTRXE</b> — confirm with §6 before concluding it is firmware-fixable vs a passive RX-front-end (matching/NF) hardware deficit.</p>
+<p class="note"><b>Honest caveat:</b> that an un-clocked <code>GPIO_MODE</code> write <i>silently</i> fails is documented in the UM but not independently re-confirmed by us; treat §3 as a high-probability hypothesis to verify on the bench (§6), not a settled fact. TX works at 2 km because the TX external-PA control (EXTPA/EXTTXE) is driven by the digital TX sequencer path, which is why the failure is RX-only.</p>
+
+<!-- ====================== SECTION 4 — link budget ====================== -->
+<h2 id="s4"><span class="num">§4</span> &nbsp;Long-range link-budget hardening</h2>
+<h3>4A &nbsp;<span class="pill important">important</span>&nbsp; TX power temperature compensation <span class="where">— dwConfig, anc/src/dw1000.cpp:80–106 &amp; tag/src/dw1000.cpp:102–136</span></h3>
+<p>TX power is set once at boot via <code>dwt_configuretxrf()</code>; <code>dwt_readtempvbat()</code> / <code>dwt_calcpowertempadj()</code> are never called. APS023 Pt&nbsp;1 §8.2: channel-2 TX power falls <b>~0.035 dB/&deg;C</b> → a &minus;10&nbsp;&deg;C→+30&nbsp;&deg;C outdoor swing ≈ <b>1.4 dB</b> of lost EIRP, straight off the long-range budget. <b>Fix:</b> periodically (post-wake / on temperature delta) read chip temperature and re-apply temperature-compensated power before TX.</p>
+
+<h3>4B &nbsp;<span class="pill important">important</span>&nbsp; Per-device antenna-delay calibration <span class="where">— anc/inc/dw1000.h:149–150 ; tag/Inc/dw1000.h:92–93</span></h3>
+<p>Antenna delays are hardcoded (anc 16550/16500; tag 16500/16500). APS014: uncalibrated antenna delay ≈ <b>30 cm 3&sigma;</b> error, drifting <b>2.15 mm/&deg;C</b>. This is a <i>constant</i> offset (doesn't grow with range, won't stop you reaching distance) but it is your absolute-accuracy floor — calibrate per unit if sub-30 cm accuracy matters.</p>
+
+<!-- ====================== SECTION 5 — robustness ====================== -->
+<h2 id="s5"><span class="num">§5</span> &nbsp;Robustness / verify (lower priority)</h2>
+<table class="avoid-break">
+  <thead><tr><th style="width:30px">#</th><th style="width:155px">Location</th><th>Change</th><th>Severity</th></tr></thead>
+  <tbody>
+    <tr><td class="id">5A</td><td class="line">anc/src/dw1000.cpp:320–330<br>tag/src/dw1000.cpp ~255</td><td>Error path clears only <code>ALL_RX_TO|ALL_RX_ERR</code> before <code>dwt_rxreset()</code>, leaving "good-RX" latched bits set. Clear all relevant status bits. Runs constantly at long range (frequent RX errors).</td><td><span class="pill optional">medium</span></td></tr>
+    <tr><td class="id">5B</td><td class="line">anc/src/dw1000.cpp:274 vs :160</td><td><code>dwRange</code> uses <code>frame_len == sizeof()</code> while <code>dwScanMode</code> uses <code>&lt;=</code>. Make consistent (prefer <code>&lt;=</code>). Robustness only — <b>not</b> the "drops all frames" critical bug an earlier pass mis-rated (ranging works at 3 km today, so <code>==</code> is functioning).</td><td><span class="pill optional">low</span></td></tr>
+    <tr><td class="id">5C</td><td class="line">anc/src/dw1000.cpp:190</td><td>Backoff uses <code>random()</code>, likely unseeded → every anchor shares one sequence → synchronized collisions in multi-anchor setups. Seed per-device (e.g. from device ID). <b>Promoted to 8E</b> now that two stations share a tag.</td><td><span class="pill important">→ 8E</span></td></tr>
+    <tr><td class="id">5E</td><td class="line">anc/src/usart.c:379 (RxEventCallback; no ErrorCallback exists)<br>tag likewise</td><td><b>UART receive dies for good on any line error.</b> Reception runs as <code>HAL_UARTEx_ReceiveToIdle_DMA</code> and is re-armed only from <code>UART_GetMessage</code> after a good idle event. In DMA mode the HAL treats <i>every</i> line error (framing, noise, overrun, parity) as blocking: it aborts the receive and calls <code>HAL_UART_ErrorCallback</code> — which this firmware does not define, so nothing re-arms. One glitch from a flaky USB adapter, a hot-plug, or a host opening the port at the wrong baud, and the anchor answers nothing until power-cycled (the main loop and watchdog keep running; only the UART is deaf). Bench 2026-10-13: right after one 3-byte Status frame was sent at the wrong baud (115200 instead of 921600), all three Mob anchors stopped answering at the correct baud, with no USB re-enumeration in the kernel log, and a power-cycle restored them. The field symptom is an anchor that "does not answer on USB" at BIT with its adapter enumerated fine.
+<pre><span class="add k">void</span><span class="add"> HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)</span>
+<span class="add">{</span>
+<span class="add">    </span><span class="k add">if</span><span class="add"> (huart-&gt;Instance == USART6 || huart-&gt;Instance == USART3) {</span>
+<span class="add">        __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_OREF | UART_CLEAR_NEF | UART_CLEAR_FEF | UART_CLEAR_PEF);</span>
+<span class="add">        uartIdle = </span><span class="k add">false</span><span class="add">;  UART_RX_len = </span><span class="s add">0</span><span class="add">;</span>
+<span class="add">        HAL_UARTEx_ReceiveToIdle_DMA(huart, UART_Buff, </span><span class="k add">sizeof</span><span class="add">(UART_Buff));   </span><span class="c">// re-arm: a line error ends one frame, not reception</span>
+<span class="add">    }</span>
+<span class="add">}</span></pre>
+The partial frame is dropped (the host times out and resends). Same for the tag's UART.</td><td><span class="pill blocker">blocker</span></td></tr>
+    <tr><td class="id">5D</td><td class="line">anc/src/dw1000.cpp:110–115</td><td>LDE noise-threshold / peak-multiplier tuning for weak-signal first-path recovery — see <b>§7</b> (the <code>NEW_NTM</code> block is the hook, but its current value is a no-op; §7 gives the real values).</td><td><span class="pill optional">→ §7</span></td></tr>
+  </tbody>
+</table>
+
+<!-- ====================== SECTION 7 — LDE tuning ====================== -->
+<h2 id="s7"><span class="num">§7</span> &nbsp;LDE algorithm tuning — weak-signal first-path detection</h2>
+<div class="callout">
+  <b>Do §3 (RX path) first.</b> LDE operates on signal that already reached the receiver. If Rev-D's LNA isn't switched in, no
+  LDE value recovers a signal that is below the noise floor. Tune LDE <i>after</i> the receiver is actually hearing — to squeeze
+  the last few dB of weak-signal margin, not as the cure for the 400&nbsp;m failure. Hence <span class="pill optional">experiment</span>, not blocker.
+</div>
+<p class="note"><b>What the firmware runs today (verified):</b> <code>dwt_configure()</code> calls the stock <code>_dwt_configlde()</code>, which writes
+<code>LDE_CFG1 = LDE_PARAM1 = PEAK_MULTPLIER(0x60) | N_STD_FACTOR(13) = <b>0x6D</b></code> (PMULT=3, NTM=13) and <code>LDE_CFG2 = 0x0607</code> for 64&nbsp;MHz PRF.
+The <code>#ifdef NEW_NTM</code> block at anc/src/dw1000.cpp:110–114 is compiled out — <b>and even if enabled it re-writes the same <code>0x6D</code></b>, so it is a no-op-in-waiting, <i>not</i> the NLOS tuning its comment implies.</p>
+
+<h3>7A &nbsp;<span class="pill optional">experiment</span>&nbsp; Lower the LDE first-path threshold (NTM + PMULT) <span class="where">— write after dwt_configure(), e.g. anc/src/dw1000.cpp:110 / tag/src/dw1000.cpp ~118</span></h3>
+<p><code>LDE_CFG1</code> (reg 0x2E:0806) is one byte = <b>PMULT</b> (bits 7:5) + <b>NTM</b> (bits 4:0). Your current <code>0x6D</code> is tuned for <i>close-up line-of-sight accuracy</i> — the opposite of what a weak long-range first path needs.</p>
+<table class="avoid-break">
+  <thead><tr><th style="width:90px">LDE_CFG1</th><th style="width:60px">PMULT</th><th style="width:50px">NTM</th><th>Meaning (UM §7.2.47.2, verbatim guidance)</th></tr></thead>
+  <tbody>
+    <tr><td class="line"><code>0x6D</code> <b>(now)</b></td><td>3</td><td>13</td><td><i>"used … to give more accuracy in close-up LOS conditions."</i> Highest threshold — most likely to miss a weak/attenuated first path.</td></tr>
+    <tr><td class="line"><code>0x6C</code></td><td>3</td><td>12</td><td>Decawave default — <i>"reasonable compromise … between falsely triggering on noise peaks and missing real attenuated first paths."</i></td></tr>
+    <tr><td class="line"><code>0x07</code> <b>(NLOS)</b></td><td>0</td><td>7</td><td>NTM: <i>"Where NLOS performance is more important … the default NTM value of 0x07 … would be a better choice."</i> &nbsp; PMULT: <i>"For NLOS operations these bits should be set to 0."</i></td></tr>
+  </tbody>
+</table>
+<pre><span class="c">/* after dwt_configure() — it calls _dwt_configlde() and would overwrite an earlier write */</span>
+<span class="c">/* sweep this value on the bench; lower = detects weaker first paths, but risks noise lock */</span>
+dwt_write8bitoffsetreg(<span class="m">LDE_IF_ID</span>, <span class="m">LDE_CFG1_OFFSET</span>, <span class="s">0x07</span>);  <span class="c">// PMULT=0, NTM=7 (NLOS / long-range)</span></pre>
+<p class="codecap"><b>Sweep, don't slam:</b> <code>0x6D</code> (now) → <code>0x6C</code> (default) → <code>0x07</code> (NLOS). Measure first-path detection rate and range scatter at 400&nbsp;m / long range at each. Too low a threshold makes LDE <b>lock onto noise</b> → false detects and garbage ranges → <i>more</i> effective loss. APS006 Part 2/3 is the tuning reference.</p>
+<p class="note"><b>Placement:</b> must be written <i>after</i> <code>dwt_configure()</code> (which sets the LOS default 0x6D), on the anchor that is the existing <code>NEW_NTM</code> location. Apply identically on Tag and Anchor. &nbsp;<b>Live-tunable from rf_analyzer ✓</b> — <code>LDE_CFG1</code> is at reg 0x2E, sub-offset 0x0806. The firmware WRITE opcode (14) carries a <b>16-bit</b> reg_offset (same struct as the READ opcode, whose ACC_MEM reads already use offsets &gt;0xFF in production), so 0x0806 is reachable. <code>commands.UWB_write8bit_raw</code> now sends the offset as little-endian [lo,hi]; the analyzer Configuration tab has a "Live LDE tuning" control to sweep 0x6D/0x6C/0x07 in the field without re-flashing. (Earlier note said this needed a flash — corrected: only LDE_REPC math is driver-side; the byte itself is pokeable live, but resets to 0x6D on any dwConfig() re-run.)</p>
+<p class="note"><b>Related, NOT a tuning knob:</b> <code>LDE_REPC</code> (reg 0x2E:2804) must be divided by 8 at 110&nbsp;kbps — <code>dwt_configure()</code> does this automatically (<code>reg16 &gt;&gt;= 3</code> for <code>DWT_BR_110K</code>). Leave it alone; do not hand-write it.</p>
+
+<!-- ====================== SECTION 8 — multi-station backoff ====================== -->
+<h2 id="s8"><span class="num">§8</span> &nbsp;Multi-station coexistence — UWB backoff (two anchor systems, one tag)</h2>
+<p class="note"><b>Line numbers in this section</b> reference the anchor source in <code>firmware_code_for_reference/anchor-tag-bootload-backup-23-9-2026.zip</code> (<code>Anchor/Core/…</code>, firmware <code>sC3.0.67</code>), which is the build that carries opcode 19 (<code>BACKOFF_CTRL</code>). Added 2026-10-13.</p>
+
+<div class="callout">
+  <b>Goal.</b> Two stations with different <code>PC_ID</code> (e.g. Mob + Fly) range the <i>same</i> tag. The tag answers whichever anchor polls it
+  (<code>tag/…/dw1000.cpp:253</code> checks only <code>des == SELF_ID</code>, no pc_id filter), so the only shared resource is the air. The anchor already
+  implements a passive <b>listen-before-talk</b>: between UART commands it sits in <code>dwScanMode()</code> (main.cpp:408, gated by <code>BackOFF_CTRL</code>);
+  any frame whose pc_id (<code>src&gt;&gt;2</code> for anchor frames, <code>des&gt;&gt;2</code> for tag frames) is foreign arms
+  <code>backoff_timer = now + random()%200 + 10</code> (dw1000.cpp:201, i.e. 10–209&nbsp;ms); a <code>SEARCH_TWR</code> that arrives while it is armed
+  skips <code>dwRange()</code> and answers with <code>errors.bit4 = UWB_Backoff</code> (main.cpp:252, uart_communication.c:176). The PC side will treat that bit
+  as "not polled" and yield. The mechanism is sound <b>but as written it starves the second station</b> — §8A.
+</div>
+
+<div class="callout warn">
+  <b>Starvation (why 8A is a blocker).</b> dw1000.cpp:201 <i>re-arms</i> the timer on <b>every</b> foreign frame. Station A ranging at ~30&nbsp;Hz puts a
+  foreign frame on the air every ~11&nbsp;ms at B's anchors; each one pushes B's deadline ≥10&nbsp;ms further out, so B's backoff <i>never expires</i>
+  (P(random&nbsp;&le;&nbsp;11&nbsp;ms) ≈ 1%). B reports <code>UWB_Backoff</code> forever, never transmits, so A's anchors never hear B and A never yields.
+  Whoever is already running wins permanently — in both directions, after any handover. A passive backoff can only hand the channel over if
+  the waiting side is <i>guaranteed</i> to transmit after a bounded wait (classic CSMA). Fix: arm once per busy period, expire, transmit.
+</div>
+
+<div class="callout warn avoid-break">
+  <b>Bench result, firmware sC3.0.69 (2026-10-13, Fly PC id 1 + Mob PC id 11, tag 56).</b>
+  <ul style="margin:4px 0 0; padding-left:16px">
+    <li><b>8B works:</b> opcode 19 = 0 releases an armed backoff at once and the anchor ranges on the next request; re-enabling does not re-arm by itself.</li>
+    <li><b>Arming works:</b> five rounds of the other station's traffic arm all three anchors.</li>
+    <li><b>Expiry is broken — blocker:</b> the Status backoff field (now ms left) counts down and <b>stops at 1</b>; the anchor answers every SEARCH_TWR with bit 4 for good (watched 3 s, and indefinitely in earlier runs). One burst of foreign traffic silences a station permanently. Likely an off-by-one in the countdown or in the expiry compare (<code>&lt;</code> vs <code>&lt;=</code>, or a decrement that stops at 1).</li>
+    <li><b>8C half done:</b> Status carries ms left; the TWR reply's distance field is still 0 on a backed-off frame, so the PC cannot size its yield.</li>
+  </ul>
+  PC-side workaround in place: an anchor that reports backoff for longer than 250&nbsp;ms (+0–150&nbsp;ms jitter) is released with opcode 19 off/on and polled again.
+  Measured, both stations on one tag for 20&nbsp;s: <b>42 + 30 valid ranges/s</b> (each alone: 81–89/s), p95 gap 83 / 229&nbsp;ms; with backoff off: 13 + 10/s, p95 gap 431 / 368&nbsp;ms, max 3.6&nbsp;s.
+  Field scenario (one station alone 10&nbsp;s, the other joins for 20&nbsp;s, the first stops), both orders: the newcomer's first range after 0.4–1.4&nbsp;s;
+  while both run 21–48 valid ranges/s each, worst gap 0.7–1.9&nbsp;s; the station left alone is back to full rate (85–90/s) within the first second.
+  Releasing a whole station at once instead of per anchor measured worse (worst gaps 5–6&nbsp;s).
+  With expiry fixed, the release becomes the rare §8A bounded wait instead of the normal path, and the fine window of 8D
+  can interleave the stations per exchange, which is what will shorten those overlap gaps.
+</div>
+
+<div class="callout ok avoid-break">
+  <b>Bench result, firmware sC3.0.70 (2026-10-14, same rig).</b> <b>Expiry fixed:</b> after a burst of the other station's traffic the Status field read 42–44&nbsp;ms left,
+  counted down to 0, and the anchor ranged again by +134&nbsp;ms. <b>TWR reply:</b> carries the backoff bit only, by design (no time field; only Status counts down). That is all the PC needs: it polls every round anyway, so the next reply shows when the backoff has ended.
+  Measured (both stations ranged lower alone than the day before, 60–68/s, so compare within the day): simultaneous start 30.6 + 31.5 valid ranges/s, p95 gap 111 / 90&nbsp;ms
+  (backoff off: 14.1 + 8.7/s); join/leave both orders — newcomer's first range 0.4–0.75&nbsp;s, 27–45/s each while both run, worst gap 0.8–1.9&nbsp;s, full rate again within 1&nbsp;s.
+  A 30&nbsp;ms PC yield was tried and was worse (fewer whole rounds). The remaining overlap gaps are slot-like alternation; the fine window of 8D is
+  the next firmware lever. (PC side since: taking turns, ON/OFF 250/250 — Mob's share 0.3–1.1 → 7.3–8.0 valid ranges/s with Mob ranging from its front anchor only.)
+</div>
+
+<h3>8A &nbsp;<span class="pill blocker">blocker</span>&nbsp; Arm the backoff once per busy period; own-pc_id frames must not clear it <span class="where">— anc/src/dw1000.cpp:198–202 (dwScanMode)</span></h3>
+<pre><span class="c">/* current: every foreign frame re-arms (never expires under continuous foreign traffic);
+   every OWN frame clears it (A's own next poll erases the yield B just earned) */</span>
+<span class="k">if</span> (dwmInfo.detec_pc_id == <span class="k">true</span>){
+    dwmInfo.backoff_timer = <span class="s">0</span>;
+}<span class="k">else</span>{
+    dwmInfo.backoff_timer = _1ms_tick + random() % <span class="m">TIME_TOP_RANGE_MS</span> + <span class="m">MIN_BACKOFF_MS</span>;
+}
+
+<span class="c">/* &rarr; arm ONLY when not already running; a running timer is left alone by both own and foreign frames.
+   "Running" = deadline still in the future; an expired deadline counts as idle so it can re-arm on the next busy period. */</span>
+<span class="add k">bool</span><span class="add"> running = (dwmInfo.backoff_timer != </span><span class="s">0</span><span class="add">) &amp;&amp; (dwmInfo.backoff_timer &gt; _1ms_tick);</span>
+<span class="add k">if</span><span class="add"> (!dwmInfo.detec_pc_id &amp;&amp; !running) {</span>
+<span class="add">    dwmInfo.backoff_timer = _1ms_tick + random() % </span><span class="m">TIME_TOP_RANGE_MS</span><span class="add"> + </span><span class="m">MIN_BACKOFF_MS</span><span class="add">;</span>
+<span class="add">}</span></pre>
+<p class="codecap">Bounded wait: at most <code>MIN_BACKOFF_MS + TIME_TOP_RANGE_MS − 1</code> after the first foreign frame, the next <code>SEARCH_TWR</code> goes out
+regardless (main.cpp:252 already clears the timer on expiry and ranges). That poll is what the <i>other</i> station's anchors hear, back off from, and report
+to their PC, which then yields. Without the own-pc_id change, an anchor that hears a sibling anchor's poll (same pc_id, every round) drops a foreign backoff
+in progress, so a running station never actually yields even once its PC wanted to. Collision risk on the barge-in poll is ~30% (air occupancy of one station
+≈ 3×(3–4&nbsp;ms) per 33&nbsp;ms round); a collided poll is a normal miss and the next one goes out after the next backoff.</p>
+
+<h3>8B &nbsp;<span class="pill blocker">blocker</span>&nbsp; <code>BACKOFF_CTRL = 0</code> must also release an armed timer <span class="where">— anc/src/main.cpp:281–283 (UART_OPCODE_BACKOFF_CTRL)</span></h3>
+<pre><span class="c">/* current: disables the scan only — an already-armed deadline keeps blocking SEARCH_TWR (main.cpp:252) until it expires */</span>
+<span class="k">if</span>(msg.op_backoff_ctrl_req.BackOFF_CTRL == <span class="s">0</span>){
+    BackOFF_CTRL = <span class="k">false</span>;
+<span class="add">    dwmInfo.backoff_timer = </span><span class="s">0</span><span class="add">;   </span><span class="c">// &rarr; release: "disable backoff" means "poll on the next SEARCH_TWR"</span>
+}</pre>
+<p class="codecap">This is the PC's <b>barge-in</b> lever: after N consecutive <code>UWB_Backoff</code> replies the PC sends opcode 19 = 0 to one anchor, polls once
+(making the other station yield), and sends 19 = 1 again. With 8A in place barge-in is rarely needed; without 8A it is the <i>only</i> way for the second
+station to get in, and today it costs an extra ≤209&nbsp;ms wait because the armed deadline survives the disable. One line.</p>
+
+<p class="note"><b>8C below is dropped (2026-10-14):</b> the PC uses only the backoff bit of the TWR reply and needs no time — it polls every round, so the next reply shows when the backoff ended. sC3.0.70 already clears the bit on expiry and counts down in Status. Kept for the record.</p>
+<h3>8C &nbsp;<span class="pill none">dropped</span>&nbsp; Report backoff <i>time left</i> (ms), not a raw tick, and only while it is running <span class="where">— anc/src/uart_communication.c:176 (TWR reply) · :193 (Status) · :108 / :128 (BIT, wake-up)</span></h3>
+<pre><span class="c">/* current (TWR reply): bit = "timer non-zero" — also set by a STALE, already-expired deadline that no SEARCH_TWR has cleared yet;
+   uwb_distance on a skipped range carries the PREVIOUS exchange's distance; Status.UWB_backoff is the absolute _1ms_tick deadline (meaningless to the PC) */</span>
+reply-&gt;op_twr_rply.errors.bits.UWB_Backoff = !!dwmInfo.backoff_timer;
+
+<span class="c">/* &rarr; one helper, used by all four replies */</span>
+<span class="add k">static uint32_t</span><span class="add"> backoff_left_ms(</span><span class="k">void</span><span class="add">) {</span>
+<span class="add">    </span><span class="k">return</span><span class="add"> (dwmInfo.backoff_timer &gt; _1ms_tick) ? (dwmInfo.backoff_timer - _1ms_tick) : </span><span class="s">0</span><span class="add">;</span>
+<span class="add">}</span>
+<span class="c">/* TWR reply (:176): */</span>
+<span class="add k">uint32_t</span><span class="add"> left = backoff_left_ms();</span>
+<span class="add">reply-&gt;op_twr_rply.errors.bits.UWB_Backoff = (left != </span><span class="s">0</span><span class="add">);</span>
+<span class="add k">if</span><span class="add"> (left) reply-&gt;op_twr_rply.uwb_distance = left;   </span><span class="c">// skipped range: distance field carries ms-left instead (PC reads it only when bit4 is set)</span>
+<span class="c">/* Status reply (:193): */</span>
+<span class="add">reply-&gt;op_stt_rply.UWB_backoff = backoff_left_ms();</span>
+<span class="c">/* BIT (:108) and wake-up (:128) replies: */</span>
+<span class="add">reply-&gt;…errors.bits.UWB_Backoff = (backoff_left_ms() != </span><span class="s">0</span><span class="add">);</span></pre>
+<p class="codecap">Wire-compatible: no struct change, no length change; <code>uwb_distance</code> is <code>uint32_t</code> and otherwise 0/stale on a skipped range (<code>data_status</code>
+already says no DW data). The PC then waits exactly <code>left</code>&nbsp;ms (+ a few ms) instead of a blind 300&nbsp;ms, and never mistakes a stale deadline for a live backoff.
+Keep the existing convention that the reply is still sent (the anchor must answer every <code>SEARCH_TWR</code>, backoff or not).</p>
+
+<h3>8D &nbsp;<span class="pill optional">choose</span>&nbsp; Backoff window: coarse (TDM-like, 300&nbsp;ms slots) or fine (exchange-level interleave) <span class="where">— anc/inc/dw1000.h:93–94</span></h3>
+<table class="avoid-break">
+  <thead><tr><th style="width:120px">Mode</th><th style="width:170px">Constants</th><th>Behaviour with two stations</th><th>PC side</th></tr></thead>
+  <tbody>
+    <tr><td><b>Coarse</b> (today's values)</td><td class="line">TIME_TOP_RANGE_MS 200<br>MIN_BACKOFF_MS 10</td>
+        <td>Stations alternate in bursts: one ranges at ~30&nbsp;Hz until the other barges in (≤209&nbsp;ms after it first hears it), then yields. Each station sees ~9-round holes of ~300&nbsp;ms per handover.</td>
+        <td>On bit4: wait the PC's yield (Advanced, default 300&nbsp;ms; 40&nbsp;ms while taking turns) and poll again; a long backoff is released via 8B.</td></tr>
+    <tr><td><b>Fine</b> (recommended)</td><td class="line">TIME_TOP_RANGE_MS 15<br>MIN_BACKOFF_MS 1</td>
+        <td>Backoff on the scale of one exchange (~3–4&nbsp;ms air, ~11&nbsp;ms with UART). Stations interleave per exchange; each gets ~12–15&nbsp;Hz with jitter and no holes. No handover protocol, no starvation, no yield timer. <b>Requires 8A</b> (with re-arm, a short window makes starvation worse, not better).</td>
+        <td>On bit4: re-send <code>SEARCH_TWR</code> to the same anchor after ~5&nbsp;ms, up to 3 tries (a rejected request costs ~1&nbsp;ms of UART), then move on.</td></tr>
+  </tbody>
+</table>
+<p class="codecap">The PC's position/bearing filters propagate with the measured <code>dt</code> (CV predict, dt-scaled gates), so either mode is safe for the filtering; the fine mode is
+better for it (jittered 15&nbsp;Hz beats 30&nbsp;Hz with 300&nbsp;ms holes — fewer lost rounds, less lag at every handover). Both values are compile-time; a runtime setter (opcode 19 payload byte 2 = top-ms) would let the PC pick per deployment.</p>
+
+<h3>8E &nbsp;<span class="pill important">important</span>&nbsp; Seed <code>random()</code> per anchor <span class="where">— anc/src/main.cpp init (before the main loop); promotes 5C</span></h3>
+<pre><span class="add">srandom((</span><span class="k">unsigned</span><span class="add">)(</span><span class="m">PC_ID</span><span class="add"> ^ (dwmInfo.anchor_id &lt;&lt; </span><span class="s">8</span><span class="add">) ^ HAL_GetTick() ^ </span><span class="m">HAL_GetUIDw0</span><span class="add">()));</span></pre>
+<p class="codecap">With two stations this is no longer cosmetic: all six anchors run the same unseeded sequence, so two anchors that hear the same foreign frame pick the same backoff
+and their barge-in polls collide deterministically, round after round. Any per-device seed breaks the lock-step.</p>
+
+<h3>8F &nbsp;<span class="pill important">important</span>&nbsp; Imposter mode (BIT) must match the id a poll can actually carry — bit 15 masked <span class="where">— anc/src/dw1000.cpp:402 (dwTagMode) · :40 (dwConfig, tx_resp_msg.src) · :232 (dwRange, rx_resp_msg.src) · main.cpp:248</span></h3>
+<div class="callout warn">
+  <b>Latent: no station is known to hit this today.</b> It was suspected for Mob's failing BIT on 2026-10-13, but Mob's PC id read back as 11 (self ids 0x2C–0x2E), well clear of it.
+  The station self-test switches each anchor to imposter mode and has the others range it under its Status <code>self_id = PC_ID&lt;&lt;2 | anchor_id</code>.
+  <code>SEARCH_TWR</code> strips bit 15 of the requested id as the LoRa-only flag (main.cpp:248, <code>&amp; 0x7FFF</code>), so the poll goes out with
+  <code>des = self_id &amp; 0x7FFF</code> — but the imposter accepts a poll only when <code>des == self_id</code> <i>unmasked</i>. Any station whose
+  <b>PC id is ≥ 8192</b> (bit 15 of <code>self_id</code> set) would have anchors that can never be ranged as imposters. Keep every station's PC id below 8192.
+</div>
+<pre><span class="c">/* current (dwTagMode): the imposter answers only its full 16-bit self id */</span>
+<span class="k">if</span> (rx_buffer.des == tx_resp_msg.src) {
+
+<span class="c">/* &rarr; the id a poll can carry: bit 15 is the LoRa-only flag on the UART side, never part of an over-the-air id */</span>
+<span class="k">if</span> (rx_buffer.des == (tx_resp_msg.src <span class="add">&amp; </span><span class="s add">0x7FFF</span>)) {
+
+<span class="c">/* and in dwRange, the expected responder id is already the masked tag_dest (rx_resp_msg.src = dwmInfo.tag_dest) —
+   the imposter's reply must carry the same, so build its response src masked too: */</span>
+tx_resp_msg.src = <span class="add">(</span>(dwmInfo.mine_pc_id &lt;&lt; <span class="s">2</span>) | dwmInfo.anchor_id<span class="add">) &amp; </span><span class="s add">0x7FFF</span>;   <span class="c">// dwConfig, :40</span></pre>
+<p class="codecap">Two masks, both sides of the same exchange; a real tag is unaffected (its id never has bit 15). <b>Until this lands</b>, the field workaround is a PC id below 8192 on the
+affected station (<code>SET_ID</code>, hitan-cli menu 2) — the PC-side BIT now names this condition from the Status <code>self_id</code> instead of reporting three unrangeable pairs.
+Longer term, bit 15 of the UART id should not double as a flag at all: 14 bits of PC id + 2 of anchor id already fill the 16, so the LoRa-only request belongs in its own byte.</p>
+
+<h3>8G &nbsp;<span class="pill important">important</span>&nbsp; SET_ID must also refresh the UWB frame ids, or say "reboot required" <span class="where">— anc/src/main.cpp (case UART_OPCODE_SET_ID) · dw1000.cpp:36–40 (dwConfig)</span></h3>
+<p>The changelog (C1.6.03) says a PC-id change no longer needs a reset. That holds only for the Status <code>self_id</code>: the handler calls
+<code>SetAnchor_self_id()</code>, which rebuilds <code>lora_rxInfo.self_id</code>. The UWB side keeps the boot-time value — <code>dwmInfo.mine_pc_id</code>
+is set once by the static initializer, and <code>tx_poll_msg.src</code>, <code>rx_resp_msg.des</code> and <code>tx_resp_msg.src</code> are built from it once in
+<code>dwConfig()</code>. Until a power-cycle the anchor <b>reports the new id but ranges, answers BIT as imposter, and judges backoff under the old one</b>:
+a BIT run straight after SET_ID polls the imposter at an id it does not answer, and every pair fails.</p>
+<pre><span class="c">/* SET_ID handler, after a successful Flash_Write: */</span>
+SetAnchor_self_id();
+<span class="add">dwmInfo.mine_pc_id = </span><span class="m add">PC_ID</span><span class="add">;</span>
+<span class="add">uint16_t id = (dwmInfo.mine_pc_id &lt;&lt; </span><span class="s add">2</span><span class="add">) | dwmInfo.anchor_id;</span>
+<span class="add">tx_poll_msg.src = rx_resp_msg.des = tx_resp_msg.src = id;   </span><span class="c">// the three frame templates dwConfig() fills</span></pre>
+<p class="codecap">Also on the PC side: the payload is the PC id itself (the anchor id comes from the cable pins). The hitan-cli SET_ID menu used the older
+<code>pc&lt;&lt;2 | anchor</code> packing, so entering "PC 2, anchor 3" stored PC id 11; fixed 2026-10-13, and it now prompts for a power-cycle.</p>
+
+<div class="callout ok avoid-break">
+  <b>PC-side contract (hitan_station), for reference.</b> <code>errors</code> bit4 (0x10) on a TWR reply means <i>not polled</i>: not a missed range, not a dead anchor,
+  not a silent tag (no LoRa wake-up, no spare engagement, no miss count). On bit4 the PC waits its yield (Advanced, default 300&nbsp;ms; 40&nbsp;ms while taking turns)
+  and polls again — the next reply shows whether the backoff has ended; an anchor backed off past the release time is freed via opcode 19 off/on (8B). Stations must have distinct <code>PC_ID</code> (bits 15:2 of <code>self_id</code>, set with
+  <code>SET_ID</code>) — verify on both stations before the first joint test.
+</div>
+
+<!-- ====================== SECTION 6 — bench + glance ====================== -->
+<h2 id="s6"><span class="num">§6</span> &nbsp;Bench verification &amp; at-a-glance</h2>
+
+<div class="callout ok">
+  <b>Confirm §3 (RX deafness) in 5 minutes, before changing anything else.</b>
+  After <code>dwConfig()</code> runs, read <code>GPIO_MODE</code> (0x26:00) bits 19:18 (MSGP6): if they read <b>00</b> despite
+  <code>dwt_setlnapamode</code> writing <b>01</b>, the GPIO write silently failed — that is the smoking gun. Also read
+  <code>PMSC_CTRL0</code> bits 16/17 (expect <b>0/0</b> now, <b>1/1</b> after 3A). Scope GPIO6/pin&nbsp;30 during RX (flat-low now → pulses high after 3A).
+  Then apply 3A and re-run Skylab&nbsp;TX&nbsp;→&nbsp;Rev-D&nbsp;RX at 400&nbsp;m. If loss drops toward 0–4%, confirmed firmware-fixable; if not, the deficit is in Rev-D's passive RX front-end (hardware).
+</div>
+
+<div class="grid3 avoid-break">
+  <div class="card b"><div class="h">Do first (blockers)</div><ul>
+    <li><b>3A</b> — GPIO clocks → RX LNA <i>(the Rev-D fix)</i></li>
+    <li><b>1A</b> — 110k carrier-int multiplier</li>
+    <li><b>1B</b> — reject negative ToF</li>
+    <li><b>1C–1F</b> — BR_110K + PLEN_2048/PAC64 + sfdTO, both ends</li>
+    <li><b>8A / 8B</b> — backoff: arm once; CTRL=0 releases <i>(two stations)</i></li>
+    <li><b>5E</b> — UART error callback re-arms RX (deaf anchor)</li>
+  </ul></div>
+  <div class="card i"><div class="h">Then (range margin / multi-station)</div><ul>
+    <li><b>2A</b> — TX-1 errata clock enable</li>
+    <li><b>4A</b> — TX power temp compensation</li>
+    <li><b>1G / 1H</b> — RX / preamble-detect timeouts</li>
+    <li><b>4B</b> — per-device antenna cal</li>
+    <li><b>8E</b> — seed backoff RNG</li>
+    <li><b>8F</b> — imposter id mask (latent; PC id ≥ 8192)</li>
+  </ul></div>
+  <div class="card v"><div class="h">Verify / when scaling</div><ul>
+    <li><b>5A</b> — clean status-bit clearing</li>
+    <li><b>5B</b> — <code>==</code>/<code>&lt;=</code> consistency</li>
+    <li><b>8D</b> — backoff window: coarse vs fine <i>(needs 8A)</i></li>
+    <li><b>7A</b> — LDE NTM/PMULT sweep <i>(after §3)</i></li>
+  </ul></div>
+</div>
+
+<p class="note" style="margin-top:14px"><b>Verdict on the TWR logic:</b> sound. The directional A/B result (Rev-D&rarr;Skylab works, Skylab&rarr;Rev-D fails) is itself proof that the SS-TWR exchange, addressing, and timing are correct — a logic defect would be symmetric. The accuracy items (1A, 4B) affect distance <i>values</i>, not whether frames are received; the genuine logic nits (5B, 5C) don't cause the long-range loss. The long-range loss is a Rev-D <i>receive</i> problem — §3.</p>
+
+<p class="footer-id" style="margin-top:10px">Line numbers reference <code>documentation/fw_actual_ref/</code>. Grounded in: DW1000 User Manual §7.2.39 / §7.2.40.11 / §7.2.47.2 / Tables 6, 21, 57 · DW1000 Errata §3.1.3 · APS004 §2–3 · APS006 Pt 2/3 · APS011 · APS014 · APS017 · APS023 Pt 1 §8.2. The reference tree is read-only; apply these in your working firmware source.</p>
+
+</body>
+</html>

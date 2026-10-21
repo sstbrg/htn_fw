@@ -90,12 +90,32 @@ wizard's **Data rate** box can start lower.
 
 ### LEDs
 
-| Board | LED | Meaning |
-|---|---|---|
-| Loader | status LED (anchor: battery-bar LED 0), fast blink | FOTA loader mode |
-| Loader | link LED (anchor: battery-bar LED 3), fast blink | sending data |
-| Target | status LED, slow blink | receiving an update |
-| Target | link LED, fast blink | data arriving |
+Two LEDs per board show FOTA. On a tag: the **status** LED and the **link-up**
+LED. On an anchor (rev D has no status/link LEDs): **battery-bar LED 0**
+(PE14) as status and **battery-bar LED 3** (PF15) as link.
+
+| Phase | Board | Status LED | Link LED |
+|---|---|---|---|
+| FOTA loader mode | loader | fast blink | off |
+| Image loading from the PC | loader | fast blink | fast blink |
+| Sending over UWB | loader | fast blink | fast blink |
+| Handshake accepted, 5 s countdown | target | slow blink | off |
+| Receiving over UWB (under 1 s at 6.8 Mbps) | target | slow blink | fast blink |
+| Writing flash | target | on | on |
+| Rebooted into the new firmware | target | off | off |
+
+`htn_fw.py led-test` lights every LED a board can drive, one at a time, to see
+which ones are fitted.
+
+### Power
+
+The target must be powered. Rev D anchors run from USB power only (a charger
+or power bank is enough; no data connection needed); their battery input does
+not supply the board. Tags run from their battery.
+
+After an update, or when a session is aborted, both boards return to the
+normal ranging UWB settings; the fast data-rate settings only exist during a
+transfer.
 
 ## Command line
 
@@ -103,9 +123,10 @@ wizard's **Data rate** box can start lower.
 $PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB0 status
 $PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB0 discover          # boards in UWB range
 $PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB0 query 6           # one board's version and CRC
-$PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB0 fota 6 releases/anchor/3.1.1/Anchor.bin
+$PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB0 fota 6 releases/anchor/3.1.4/Anchor.bin
 $PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB0 fota-exit         # leave FOTA loader mode
-$PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB0 flash releases/tag/3.1.1/Tag.bin   # over USB
+$PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB0 flash releases/tag/3.1.3/Tag.bin   # over USB
+$PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB1 led-test          # which LEDs are fitted
 ```
 
 `--port` is the loader (for `fota`, `discover`, `query`) or the board itself
@@ -161,8 +182,21 @@ Building by hand: `tools/build.sh Anchor`, `tools/build.sh Tag`,
 ## Firmware side
 
 The protocol and the target/loader logic are in `Anchor/Core/Src/fota.c` and
-`Anchor/Core/Inc/fota.h` (identical copies in `Tag/`). UART opcodes 0x40-0x49;
-0x4F is a DW1000 SPI self-test.
+`Anchor/Core/Inc/fota.h` (identical copies in `Tag/`); board specifics (id,
+LEDs, battery, UWB restore) are in each project's `fota_port.cpp`.
+
+| UART opcode | Purpose |
+|---|---|
+| 0x40 / 0x47 | enter / leave FOTA loader mode |
+| 0x41, 0x42 | load the image into the loader's RAM |
+| 0x43, 0x44, 0x46 | start, status, abort the UWB session |
+| 0x45 | query one target |
+| 0x48, 0x49 | discover targets, read the list |
+| 0x4B | LED test |
+| 0x4F | DW1000 SPI self-test |
+
+A tag stays awake while it counts down as a target. Minimum versions: FOTA
+target and loader 3.1.0, discovery 3.1.1, battery check on anchors 3.1.2.
 
 LoRa wake-up for sleeping tags is not implemented yet: the wizard skips it, so
 a tag has to be awake (on USB, or ranging) to be updated.
