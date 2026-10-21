@@ -11,6 +11,9 @@
 *.list
 objects.list
 
+# Python
+__pycache__/
+
 # Eclipse / CubeIDE workspace state
 .metadata/
 *.launch.bak

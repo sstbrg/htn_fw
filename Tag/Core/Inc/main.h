@@ -132,10 +132,12 @@ extern "C" {
  * C3.0.65		adjusted version to anchor
  * C3.0.66		adjusted version to anchor
  * C3.0.67		adjusted version to anchor
+ * tag3.1.0	[added] FOTA over UWB (fota.c): FOTA flasher mode via UART opcodes 0x40-0x47,
+ * 				FOTA target in dwRange. Image received into RAM, CRC checked, written from RAM.
  *
  */
 
-#define VERSION "sNC3.0.67"
+#define VERSION "tag3.1.0"
 
 #define IS_TAG true
 

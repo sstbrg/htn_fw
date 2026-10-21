@@ -110,6 +110,19 @@ void Battary_Led_OFF(void){
 	HAL_GPIO_WritePin(PORT(LED_BAT_3),PIN(LED_BAT_3), GPIO_PIN_SET);
 }
 
+// FOTA indication on the battery bar, which externally powered anchors don't use:
+// LED_BAT_0 = FOTA status, LED_BAT_3 = FOTA data. Refreshing batteryTimeout keeps
+// Led_Maintanence from switching them off while FOTA drives them.
+void Fota_Status_Led(int on) {
+	HAL_GPIO_WritePin(PORT(LED_BAT_0),PIN(LED_BAT_0), on ? GPIO_PIN_RESET : GPIO_PIN_SET);
+	batteryTimeout = HAL_GetTick();
+}
+
+void Fota_Link_Led(int on) {
+	HAL_GPIO_WritePin(PORT(LED_BAT_3),PIN(LED_BAT_3), on ? GPIO_PIN_RESET : GPIO_PIN_SET);
+	batteryTimeout = HAL_GetTick();
+}
+
 void Led_Maintanence(void) {
 
 	if (HAL_GetTick() - StatusTimeout > STATUS_LED_TIMEOUT) {

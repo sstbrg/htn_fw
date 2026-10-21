@@ -3,6 +3,7 @@
 #include "main.h"
 #include "flash_handler.h"
 #include "Power.h"
+#include "fota.h"
 
 #define print(...) ;
 
@@ -243,6 +244,12 @@ int dwRange(void) {
 
 		/* A frame has been received, read it into the local buffer. */
 		frame_len = dwt_read32bitreg(RX_FINFO_ID) & RX_FINFO_RXFL_MASK_1023;
+		uint8_t first = 0;
+		dwt_readrxdata(&first, 1, 0);
+		if (first == FOTA_FLAG) {
+			fota_uwb_rx(frame_len);
+			return 0;
+		}
 		if (frame_len == sizeof(rx_buffer)) {
 			dwt_readrxdata((uint8_t *)&rx_buffer, frame_len, 0);
 		}
