@@ -406,6 +406,186 @@ SetAnchor_self_id();
 </div>
 
 <!-- ====================== SECTION 6 — bench + glance ====================== -->
+
+<h2 id="s9"><span class="num">§9</span> &nbsp;Attributable CIR, per-exchange timing, negotiated TX power (host request, 2026-10-21)</h2>
+<p class="note"><b>Line numbers in this section</b> reference the current anchor/tag source (<code>Anchor/Core/Src/dw1000.cpp</code>, <code>Anchor/Core/Lora/Src/Lora.cpp</code>, firmware anc3.1.5). Host side: <code>hitan_rust</code> on the same date.</p>
+
+<div class="callout">
+  <b>Why.</b> The field failure that matters is close range with no line of sight — a MOB station near the ground, the tag behind bushes or rocks. Both radios misbehave for one reason: a weak direct path and a strong reflected one. <b>LoRa:</b> the receiver sits near compression (above ≈−30&nbsp;dBm), the level differences between anchors that carry the direction are squashed, and two-ray fading off the ground swings each level ±8&nbsp;dB within seconds. <b>UWB:</b> the first path is weak against the reflections, the accumulator saturates on the strong path, and the latched diagnostics the host gates on stop describing the leading edge; bearings scatter 12–14° per round at 1&nbsp;m (bench replay 2026-10-21).
+  What the host can do is bounded by what the anchor reports. Today only <code>dwt_readdiagnostics</code> is latched per valid exchange (<code>dw1000.cpp:355</code>, <code>dwRange</code>); <code>LDE_PPINDX</code> and <code>ACC_MEM</code> are read live over opcode 12 after RX has re-armed, so they belong to whatever frame came next — the host withholds prNlos for that reason. Measured on the truth-labelled recordings (<code>examples/nlos_features.rs</code>): the three latched first-path taps carry <b>no</b> NLOS information (AUC 0.46); RX−FP is the only discriminator and it is weak (AUC 0.62–0.76).
+</div>
+
+<div class="callout warn avoid-break">
+  <b>Rule zero for everything in §9: the link is never lost.</b> Losing communication with the tag is the one failure that is not allowed; every adaptive change below is built so that the worst case of a bad decision, a missed frame or a crash mid-negotiation is a few hundred milliseconds on the robust profile — never a tag that cannot be reached.
+  <ul style="margin:4px 0 0; padding-left:16px">
+    <li><b>Control plane stays robust, always.</b> The anchor→tag LoRa command path (wake-up, poll, profile and power requests) is fixed at maximum power and the robust spreading factor, and the tag's LoRa receiver stays on that configuration. Only the tag's <i>beacon</i> and the UWB exchange adapt. LoRa and UWB are separate radios on both sides, so the LoRa control channel is a permanent back door: any state can be undone from it.</li>
+    <li><b>Profile 0 is the ground state.</b> Any doubt on either side → profile 0, unilaterally and at once. Tag: no frame from any anchor for 1&nbsp;s. Anchor: two consecutive polls unanswered. Power-up, reset and watchdog restart land on profile 0. Wake-ups always go at profile 0.</li>
+    <li><b>Make-before-break.</b> A move to a <i>less</i> robust profile or a lower power needs the tag's echo of the request <i>and</i> the anchor's confirmation of that echo (three frames) before either side switches, and two consecutive frames with the level inside the target band after the switch before the next step. A move to a <i>more</i> robust profile or higher power takes effect immediately and without confirmation.</li>
+    <li><b>Rate-limited and bounded.</b> At most one step every 2&nbsp;s away from robustness; no limit toward it. Power never below the level that leaves 10&nbsp;dB of margin over the receiver's sensitivity at the current range, measured at the anchor, not predicted.</li>
+    <li><b>Channel changes are opt-in and proven first.</b> Shipping builds keep UWB channel 4 disabled until the bench shows ≥&nbsp;80&nbsp;% valid exchanges at 10&nbsp;m with the installed antennas; even then the near profile falls back to channel 2 after one missed exchange.</li>
+    <li><b>Chaos test, before any of §9D/9H ships.</b> 100 trials each of: walk the tag away at a run during a step down; cover the tag's antennas by hand; power-cycle one anchor mid-negotiation; power-cycle the tag; two stations on one tag. Pass criterion: the tag is reachable again within 1&nbsp;s in every trial, zero cases of permanent loss. One failure blocks the release.</li>
+  </ul>
+</div>
+
+<div class="callout ok">
+  <b>Host side, no firmware needed.</b> (1) <b>LDE NLOS preset:</b> <code>LDE_CFG1</code> is live-tunable via opcode 14 (<code>dw1000.cpp:22</code>, default 0x6D = LOS); APS006 Pt 2 recommends NTM 7 / PMULT 3 → <code>0x67</code> for NLOS — offered as a LOS/NLOS knob, not a default (more false first paths in clean air). (2) <b>Level-dependent range bias (APS011):</b> the received level is in the diagnostics, so the bias table is applied on the host.
+</div>
+
+<h3>9A &nbsp;Latch the peak-path index and the exchange tick with the diagnostics <span class="tag important">important</span></h3>
+<p>In <code>dwRange()</code>, right after <code>dwt_readdiagnostics(&amp;dwmInfo.diagnostics)</code> on a valid range, read into the same latched block: <code>LDE_PPINDX</code> (reg 0x2E, sub 0x1000, 2 bytes), <code>RXPACC_NOSAT</code> (reg 0x27, sub 0x2C, 2 bytes) and <code>HAL_GetTick()</code>. Append to the <b>DIAGNOSTIC_STATUS (opcode 13)</b> reply after <code>txw</code> (bytes 44–45, frame offsets including the 2-byte header):</p>
+<table><thead><tr><th>bytes</th><th>field</th><th>type</th></tr></thead><tbody>
+<tr><td>46–47</td><td><code>lde_ppindx</code></td><td>u16 LE</td></tr>
+<tr><td>48–49</td><td><code>rxpacc_nosat</code></td><td>u16 LE</td></tr>
+<tr><td>50–53</td><td><code>exchange_tick_ms</code></td><td>u32 LE, tick at the end of the exchange</td></tr>
+</tbody></table>
+<p>Older hosts ignore the extra bytes; the new host accepts the shorter reply from older firmware. <b>Host use:</b> prNlos per APS006 Pt 3 §5.2 from <code>|FP_INDEX/64 − PP_INDEX|</code>, attributable at last; the SFD correction on RXPACC; the anchor's tick replaces the host receipt time in the per-exchange alignment.</p>
+
+<h3>9B &nbsp;Latch a CIR window around the first path, new opcode 21 <code>READ_CIR_WINDOW</code> <span class="tag important">important</span></h3>
+<p>In the same latched block, 32 complex accumulator samples starting 8 before the detected first path, read while the accumulator still holds this reception (before RX re-arms):</p>
+<pre>start = (FP_INDEX &gt;&gt; 6) - 8;                 /* FP_INDEX is Q10.6 in RX_TIME */
+_dwt_enableclocks(READ_ACC_ON);
+dwt_readaccdata(buf, 1 + 4*32, start * 4);   /* 1 dummy octet, then (i16 re, i16 im) x 32 */
+_dwt_enableclocks(READ_ACC_OFF);</pre>
+<p>Reply to opcode 21 (no request payload): bytes 2–3 <code>fp_index</code> u16 (raw Q10.6), 4–5 <code>start</code> u16, 6 <code>n</code> u8 (32), 7… <code>n</code> × (i16 re, i16 im) LE — 135 bytes, ≈1.5&nbsp;ms at 921600. A separate opcode so the per-round cost is opt-in: the host reads it only with the quality gate on, right after the diagnostics. <b>Host use:</b> the leading-edge features the UWB NLOS literature actually uses (rise time, energy before vs after the first path, peak-to-first-path delay, kurtosis) and later a small classifier on the truth-labelled recordings. This is the only change that makes a real CIR-based NLOS gate possible.</p>
+
+<h3>9C &nbsp;Per-exchange data in the SEARCH_TWR reply <span class="tag important">important</span></h3>
+<p>Append to the <b>SEARCH_TWR (opcode 5)</b> reply after byte 16 (<code>anchor_error_v</code>):</p>
+<table><thead><tr><th>bytes</th><th>field</th></tr></thead><tbody>
+<tr><td>17–20</td><td><code>exchange_tick_ms</code> u32 LE, <code>HAL_GetTick()</code> when the response frame was received</td></tr>
+<tr><td>21</td><td><code>tag_lora_tx_dbm</code> i8, from the tag's frame (9D); 0x7F = unknown</td></tr>
+<tr><td>22</td><td><code>tag_uwb_tx_level</code> u8, from the tag's frame (9D); 0xFF = unknown</td></tr>
+<tr><td>23</td><td><code>lora_signal_rssi</code> u8, SX126x <code>SignalRssiPkt</code>, encoded like <code>lora_rssi</code> (raw = dBm + 256)</td></tr>
+</tbody></table>
+<p><code>lora_rssi</code> (byte 11) is <code>RssiPkt</code> today. <code>SignalRssiPkt</code> is the level of the LoRa signal after despreading — it excludes in-band noise and interference, which is exactly what differs near the ground. Both come from the one <code>GetPacketStatus()</code> call in the LoRa receive path (<code>Lora.cpp</code>). The host's direction maths moves to the signal level.</p>
+
+<h3>9D &nbsp;Negotiated TX power, tag and anchor (AGC-style) <span class="tag important">important</span></h3>
+<p><b>Goal:</b> keep every receiver in its linear range at any distance — LoRa level differences stay meaningful close in, the UWB accumulator does not saturate. <b>Start at today's maximum</b> and step down only as the tag comes close; back to maximum the moment the tag goes quiet.</p>
+<ul>
+  <li><b>Loop on the anchor</b> (not the host: it must react within a few packets, and must not depend on the UART). LoRa target: <code>SignalRssiPkt</code> at the anchor in −70&nbsp;±&nbsp;6&nbsp;dBm. UWB target: <code>rx_power_dbm</code> (from the diagnostics) in −80&nbsp;±&nbsp;5&nbsp;dBm — flat on the APS011 bias curve; above −65&nbsp;dBm the DW1000 saturates.</li>
+  <li><b>Steps:</b> one per packet; 2&nbsp;dB for LoRa (<code>SetTxParams</code>, <code>Lora.cpp:249</code>, today fixed at <code>TX_OUTPUT_POWER</code>); one level for UWB from a table of 8 <code>TX_POWER</code> register values 3&nbsp;dB apart, from the current maximum (<code>dw1000.cpp:134</code>) downward; smart TX power stays disabled. Dead band: no step inside the band.</li>
+  <li><b>Verification:</b> the next frame from the tag carries the power it actually used (below); a mismatch for two frames resets the request to maximum.</li>
+  <li><b>Floor and fallback (rule zero):</b> never request below −9&nbsp;dBm LoRa or the lowest UWB table entry, and never below 10&nbsp;dB of measured margin; after 1&nbsp;s with no frame from the tag, request maximum again, and the tag returns to maximum by itself after 1&nbsp;s without hearing an anchor; wake-up packets and all anchor→tag LoRa commands always go at maximum. A lost tag is found at full power first.</li>
+  <li><b>Three anchors, one tag:</b> the tag obeys the most recent request; one station's anchors share one target so their requests agree within a step; the front anchor (the only UWB ranger on MOB) owns the UWB request.</li>
+  <li><b>Over the air:</b> the anchor's UWB poll and LoRa wake/poll frames carry <code>req_lora_tx_dbm</code> (i8) and <code>req_uwb_tx_level</code> (u8); the tag's response frames carry the two it used. Older tags ignore the request and report 0x7F/0xFF, forwarded unchanged (9C), so the host can tell.</li>
+  <li><b>Host:</b> switched and configured through opcode 22 <code>SET_LINK_FEATURES</code> (9I), applied by the station worker like the backoff toggle; the current request and the tag's echo in the <b>STATUS</b> reply. The host normalises the hot/cold bar and the LoRa calibration by the reported tag power (<code>level + (max − reported)</code>) so a quieter tag does not read as a farther one. Default off until the field test says otherwise.</li>
+</ul>
+
+<h3>9E &nbsp;LoRa frequency diversity <span class="tag optional">phase 2</span></h3>
+<p>Near the ground the level at one frequency sits in a fade for seconds. The tag alternates two channels by packet-counter parity, the anchors listen in step, the host averages direction across the pair. A bigger change (channel plan, per-channel duty cycle, both firmwares); only if 9D leaves the arc unstable near the ground.</p>
+
+
+<h3>9F &nbsp;Repeat the exchange and report the minimum <span class="tag important">important</span></h3>
+<p><b>Anchor only, no negotiation.</b> NLOS error is one-sided: a reflection only ever makes a range read <i>long</i>. On a SEARCH_TWR the anchor runs <code>K</code> exchanges back-to-back and reports the <b>shortest</b> valid range (and that exchange's diagnostics). <code>K</code> adapts to the anchor's own last diagnostics: 1 while RX−FP is under the soft threshold, 3 when it is above. Cost ≈11&nbsp;ms per extra exchange; the station worker already tolerates longer rounds. Request byte: SEARCH_TWR payload gains an optional third byte <code>k_max</code> (0 = anchor decides, 1–5 = fixed); reply byte 24 <code>k_used</code>. <b>Host use:</b> none required — the range is just better; the host reads <code>k_used</code> for the round-time bookkeeping and the per-exchange tick (9C) of the reported exchange. The cheapest large NLOS win on this list.</p>
+
+<h3>9G &nbsp;LDE preset per state <span class="tag important">important</span></h3>
+<p><b>Anchor only.</b> The anchor switches <code>LDE_CFG1</code> itself: NLOS multiplier (NTM 7 / PMULT 3, <code>0x67</code>) while its last RX−FP sits above the soft threshold, LOS (<code>0x6D</code>) when it clears, with a dead band of 2&nbsp;dB and a hold of 10 exchanges so it does not chatter. Requires the RX reset the driver notes after an LDE change (<code>dw1000.cpp:234</code>). The host keeps its opcode-14 override; a STATUS bit reports which preset is active. Pairs with 9F: when the anchor flips to the NLOS preset it also raises <code>K</code>.</p>
+
+<h3>9H &nbsp;Link profile negotiation (one byte, not six parameters) <span class="tag important">important</span></h3>
+<p>Everything the tag must change in step with the anchor — TX power (9D), frequency diversity (9E), and the radio settings below — is negotiated as <b>one profile index</b>, with the request / echo / confirm / fall-back state machine of rule zero. The anchor picks the profile from RX level and range; the tag echoes it in every frame; both drop to profile 0 after 1&nbsp;s of silence; wake-ups and all anchor→tag LoRa commands always go at profile 0. A profile only ever changes the tag's beacon and the UWB exchange, never the LoRa control path.</p>
+<table><thead><tr><th>Profile</th><th>UWB</th><th>LoRa</th><th>Polls (9F)</th><th>When</th></tr></thead><tbody>
+<tr><td><b>0 far</b> (today)</td><td>ch 2, 110&nbsp;kbps, 2048 preamble, PRF 64, max power</td><td>SF high, slow beacon, max power</td><td>1</td><td>default; any silence</td></tr>
+<tr><td><b>1 mid</b></td><td>ch 2, 850&nbsp;kbps, 1024 preamble, power stepped (9D)</td><td>SF mid, beacon 2×, power stepped</td><td>1–3</td><td>RX level in band, range &lt; ~200&nbsp;m</td></tr>
+<tr><td><b>2 near</b></td><td>ch 4 if the antennas allow (900&nbsp;MHz bandwidth: paths 1&nbsp;ns apart resolve instead of smearing into one first path), else ch 2; 6.8&nbsp;Mbps, 256 preamble; power low</td><td>SF low, fast beacon, power low; channel alternation (9E)</td><td>3</td><td>RX level hot, range &lt; ~30&nbsp;m</td></tr>
+</tbody></table>
+<ul>
+  <li><b>What each setting buys.</b> Bandwidth (ch 4/7) is the one real multipath lever on the DW1000 — it needs a bench check that the installed antennas work there at all. The faster data rate and shorter preamble do not fix NLOS by themselves; they buy the repeats of 9F and more rounds per second in the same time. LoRa SF and beacon rate buy more packets per second close in, which is what steadies the arc (direction is an average over packets), and battery far out. PRF stays at 64&nbsp;MHz (already the NLOS-friendly choice); coding rate changes nothing.</li>
+  <li><b>Over the air:</b> one byte <code>profile_req</code> in the anchor's poll and wake frames, one byte <code>profile_used</code> in the tag's frames; forwarded to the host in the TWR reply (byte 25). Older tags report 0xFF and stay on profile 0.</li>
+  <li><b>Host:</b> opcode 22 (9I) carries <code>profile_max</code> and <code>profile_override</code>; the Configuration tab shows the requested and echoed profile per anchor. The host's time alignment (9C) and quality gates are profile-agnostic; the per-anchor first-path SNR history (relative gate) must reset on a profile change, since the normal level moves with the preamble.</li>
+  <li><b>Host side, no firmware:</b> the SS-TWR clock-offset correction (range error ∝ reply delay × crystal offset; the offset is already in the diagnostics as DRX_CAR_INT) is applied on the host.</li>
+</ul>
+
+<h3>9J &nbsp;Change handshake: the tag is told, acknowledges, and nothing switches until both sides have proof <span class="tag blocker">required</span></h3>
+<p>Every change the tag must apply — power, profile, channel alternation — goes through one three-way handshake with a sequence number. No side ever switches on a request alone, and no side is ever on a configuration the other does not know about.</p>
+<table><thead><tr><th>Step</th><th>Frame</th><th>Carries</th><th>Who switches</th></tr></thead><tbody>
+<tr><td>1 request</td><td>anchor → tag, in the UWB poll <i>and</i> in the LoRa command frame (max power, robust SF)</td><td><code>seq</code>, requested <code>profile</code>, <code>lora_dbm</code>, <code>uwb_level</code></td><td>nobody</td></tr>
+<tr><td>2 acknowledge</td><td>tag → anchor, in its UWB response <i>and</i> its next LoRa beacon</td><td><code>ack_seq</code> = the request it will apply, plus its <i>current</i> settings</td><td>nobody — the tag still runs the old settings</td></tr>
+<tr><td>3 confirm</td><td>anchor → tag, next poll and LoRa command</td><td><code>confirm_seq</code> = the acknowledged request</td><td>tag switches on receipt; anchor switches its receiver on sending, and keeps the old receiver configuration in its listen rotation (below) until the first frame arrives on the new one</td></tr>
+<tr><td>4 proof</td><td>tag → anchor on the new settings</td><td><code>profile_used</code>, powers used</td><td>step complete; the next step may start after <code>step_interval</code></td></tr>
+</tbody></table>
+<ul>
+  <li><b>Sequence numbers.</b> One byte, incremented per request; a request with a stale or repeated <code>seq</code> is ignored by the tag; an ack for a <code>seq</code> the anchor did not send is ignored by the anchor. Every frame carries the sender's current settings, so either side can see a mismatch at any time.</li>
+  <li><b>Retries.</b> The anchor repeats a request on every poll until acknowledged, up to 5 polls; then it cancels (the tag never switched, nothing to undo). The anchor repeats the confirm until the first frame arrives on the new settings, up to 5 polls; then both sides revert (next bullet).</li>
+  <li><b>Revert without a word.</b> If the tag applied a confirm and then hears nothing on the new settings for 500&nbsp;ms, it reverts to the <i>previous</i> settings on its own, and to profile 0 after 1&nbsp;s total. The anchor, on 2 missed polls after a confirm, goes back to the previous settings for 2 polls and then to profile 0. Both reverts are unilateral and need no frame, because the failure case is exactly that no frame gets through.</li>
+  <li><b>Listen rotation (one radio per side).</b> The DW1000 holds one configuration at a time, so during a transition the anchor alternates its receiver between the new and the old configuration poll by poll until proof arrives, and the tag, when idle, alternates between its current profile and profile 0 every 200&nbsp;ms. A tag on any profile is therefore always reachable on profile 0 within 200&nbsp;ms, and the LoRa command path reaches it at any time regardless.</li>
+  <li><b>Two radios, one truth.</b> A request or confirm is valid if it arrives on either radio; the tag acknowledges on both. Losing one radio never stalls the handshake, and the LoRa path alone can always drive the tag back to profile 0 at maximum power.</li>
+  <li><b>Two stations, one tag.</b> Requests carry the station's PC id; the tag follows the most recent confirmed request and tells both stations its current settings in every frame. A station whose requested settings are not what the tag reports simply adapts its receiver to what the tag reports (the tag's settings are authoritative), and does not fight: it never requests a less robust profile than the other station's last confirmed one.</li>
+  <li><b>Hard rule for the implementation:</b> there is no code path on either side that changes a radio setting without a confirmed sequence number, except the reverts toward profile 0. A watchdog on each side asserts, once per second, that the configured radio matches the last confirmed state or profile 0; any other state is reset to profile 0.</li>
+</ul>
+
+<h3>9K &nbsp;Two stations, one tag: adaptation is frozen, backoff untouched <span class="tag blocker">required</span></h3>
+<div class="callout warn">
+  <b>Backoff already costs performance today</b> (§8: 42 + 30 valid ranges/s with two stations against 81–89/s alone, p95 gaps of 83 / 229&nbsp;ms). Nothing in §9 may make that worse, and nothing in §9 may add a second mechanism that interacts with it. So the rule is not "coordinate the two", it is "do not adapt while there are two".
+</div>
+<ul>
+  <li><b>Two stations ⇒ ground state.</b> While the tag has heard polls from more than one PC id in the last 2&nbsp;s, it reports that, and every adaptive feature is off on both sides: profile 0, maximum power, <code>K = 1</code>, no requests sent, no handshake in flight. A station whose anchors have backoff armed, or that reads "two stations" from the tag, likewise sends nothing but profile 0. The §8 backoff, yields, duty cycle and release logic then run exactly as they do now, on the configuration they were tuned on.</li>
+  <li><b>Entering coexistence.</b> If a second station appears while the tag is on a near profile at low power, the tag reverts to profile 0 at maximum power by itself (rule zero's unilateral revert, within one listen-rotation period) and the first station follows the tag's reported settings. The newcomer always polls on profile 0 and so reaches the tag within 200&nbsp;ms; it never has to know what the tag was doing before.</li>
+  <li><b>Leaving coexistence.</b> Adaptation may resume only after the tag has reported a single station for 2&nbsp;s and no anchor of that station has backoff armed. The first step away from profile 0 is then one ordinary 9J handshake.</li>
+  <li><b>Anchor-local features that do not touch the air</b> — 9G LDE preset, the 9A/9C reply bytes, the 9B CIR latch — stay on with two stations. 9F repeats do touch the air and are forced to <code>K = 1</code>.</li>
+  <li><b>The fixed duty cycle stays as tuned.</b> While sharing the tag the host takes turns on fixed ON/OFF slots and releases a backed-off anchor after ON + 250&nbsp;ms (§8, host side). Those timings assume one exchange per poll on profile 0; the freeze keeps that true, so the slots, the release margin and the yield are not recomputed for §9 and never need to be. The tag's silence timers (500&nbsp;ms revert to the previous settings, 1&nbsp;s to profile 0) must be longer than the longest configurable OFF slot plus the release margin, so a station's own pause can never look like a lost link to the tag; with two stations the tag is on profile 0 anyway, and a lone station never pauses, so duty cycling and adaptation never run at the same time. The only overlap is the hand-over, and it passes through the ground state.</li>
+  <li><b>Per-station sequence numbers</b> (9J) remain, so a stale request from a station that has just gone quiet cannot be mistaken for a live one.</li>
+  <li><b>Regression gate.</b> Every §9 feature ships only if the §8 two-station bench (both orders of joining, 20&nbsp;s overlap, one station alone 10&nbsp;s before and after) shows valid ranges per second and p95 gaps no worse than the sC3.0.70 figures, with the feature enabled on both stations. A feature that costs two-station throughput is kept off until it is fixed, whatever it buys alone.</li>
+</ul>
+<p><b>Bench acceptance:</b> Fly alone at 100&nbsp;m on profile 0, Mob joins at 2&nbsp;m: Mob ranges within 1&nbsp;s on profile 0; the tag reports two stations; neither station sends a request; the §8 rates hold. Mob alone for 2&nbsp;s after Fly stops: the first handshake to the near profile completes; Fly returns: the tag is back on profile 0 at maximum within one rotation period and Fly ranges within 1&nbsp;s. 20/20 in each direction.</p>
+
+<h3>9I &nbsp;Every §9 feature is switchable and configurable from the app <span class="tag blocker">required</span></h3>
+<p>Nothing in §9 is always-on. Each feature has its own on/off and its settings in <b>ADVANCED → Configuration</b> (persisted in <code>hitan_settings.cfg</code> like the backoff and duty-cycle knobs), ships <b>off</b>, and is pushed to the anchors by the station worker on start and on every change, like opcode 19 today.</p>
+<p><b>Opcode 22 <code>SET_LINK_FEATURES</code></b> replaces the narrower <code>SET_TX_POWER_MODE</code> of 9D:</p>
+<table><thead><tr><th>byte</th><th>field</th><th>meaning</th></tr></thead><tbody>
+<tr><td>0</td><td><code>features</code> u8 bitmask</td><td>bit0 9F repeats · bit1 9G LDE preset · bit2 9D power loop · bit3 9H profile negotiation · bit4 9E channel alternation · bit5 9B CIR window latch · bit6 9A/9C extra reply fields (always safe to leave on)</td></tr>
+<tr><td>1</td><td><code>k_max</code> u8</td><td>9F: 1–5 (0 = anchor decides)</td></tr>
+<tr><td>2–3</td><td><code>lora_target_dbm</code>, <code>lora_band_db</code> i8, u8</td><td>9D: target level and half-width (default −70, 6)</td></tr>
+<tr><td>4–5</td><td><code>uwb_target_dbm</code>, <code>uwb_band_db</code> i8, u8</td><td>9D: default −80, 5</td></tr>
+<tr><td>6</td><td><code>profile_max</code> u8</td><td>9H: highest profile the anchor may request (0 = never leave profile 0; 1 = mid only; 2 = near allowed)</td></tr>
+<tr><td>7</td><td><code>profile_override</code> u8</td><td>9H: 0xFF = automatic, else pin this profile (bench use)</td></tr>
+<tr><td>8</td><td><code>step_interval_ds</code> u8</td><td>rule zero: minimum time between steps away from robustness, in 0.1&nbsp;s (default 20 = 2&nbsp;s)</td></tr>
+</tbody></table>
+<ul>
+  <li><b>Default is today's behaviour.</b> With all bits clear the anchor and the tag behave exactly as anc3.1.5 does now: one exchange per poll, LOS LDE, maximum power, profile 0. The tag's own default is profile 0 at maximum power; it is what the tag boots into, falls back to after 1&nbsp;s without an anchor, and returns to the moment the anchor stops requesting anything else.</li>
+  <li><b>Off means revert, not freeze.</b> Clearing bit2 or bit3 makes the anchor send "profile 0, maximum power" on its next polls until the tag echoes it, so switching a feature off from the tablet always lands the tag on its default within a few frames, never leaves it where the loop last put it.</li>
+  <li><b>STATUS reply</b> gains a <code>link_state</code> block: the active feature mask, the requested and echoed profile, the requested and echoed tag powers, the active LDE preset and the last <code>k_used</code>, so the Configuration tab shows what is in force per anchor and the tablet can tell a tag that is not following a request.</li>
+  <li><b>App side:</b> a "Link adaptation" group in Configuration with one checkbox per feature and the numbers above as tap-to-edit fields, the per-anchor <code>link_state</code> as a live line, and a single <b>REVERT ALL</b> key that clears the mask and pins profile 0 — the panic button. Nothing in LOCATE changes; the dial does not know which profile is in force.</li>
+  <li><b>Recording:</b> the per-anchor sample gains the echoed profile and tag powers, so a replay can tell a quiet tag from a far one and the hot/cold bar is normalised in playback as it is live.</li>
+</ul>
+
+<table><thead><tr><th>Order</th><th>Change</th><th>What the host gets</th><th>Cost</th></tr></thead><tbody>
+<tr><td>1</td><td>9F</td><td>one-sided NLOS error cut by the minimum of repeated exchanges</td><td>small, anchor only</td></tr>
+<tr><td>2</td><td>9G</td><td>first-path detection tuned to the state per round</td><td>small, anchor only</td></tr>
+<tr><td>3</td><td>9A</td><td>prNlos and the exchange tick, free on every diag read</td><td>small, anchor only</td></tr>
+<tr><td>4</td><td>9C</td><td>anchor-side timing; signal RSSI for the arc; the echo bytes 9D/9H need</td><td>small, anchor only</td></tr>
+<tr><td>5</td><td>9D + 9H</td><td>linear receivers close in, and the near/mid/far radio profiles (power, rate, preamble, SF, beacon rate, channel) under one negotiated byte</td><td>tag + anchor, bench pass for the loop; antenna check for ch 4</td></tr>
+<tr><td>6</td><td>9B</td><td>a real CIR window per range — the NLOS gate the current diagnostics cannot give</td><td>anchor, new opcode, opt-in per round</td></tr>
+<tr><td>7</td><td>9E</td><td>fade decorrelation near the ground (a field of the near profile)</td><td>both firmwares, channel plan</td></tr>
+</tbody></table>
+
+<div class="callout ok">
+  <b>Implemented in anc3.2.0 / tag3.2.0 (2026-10-22): 9A, 9B, 9C, 9D, 9F, 9G, 9I, 9K.</b> Not yet: 9E, 9H, 9J profiles (no anchor→tag LoRa command path exists: the tag build never listens on LoRa, and a profile mismatch stops ranging). What differs from the text above:
+  <ul style="margin:4px 0 0; padding-left:16px">
+    <li><b>Frames.</b> The legacy poll (12 bytes) and response (20 bytes) never change: an older tag drops any poll that is not 12 bytes and an older anchor any response over 20. With 9D on, the anchor sends legacy polls with byte 9 = <code>0x4C</code> (hello; <code>0xE0</code> before); a new tag answers with <code>0x80</code> set in response byte 9 (<code>0x40</code> too when it hears two stations). Only then does the anchor send the 17-byte extended poll <code>{seq, req_lora_dbm i8 (0x7F = none), req_uwb_level, confirm_seq, profile_req}</code> and the tag answer the 24-byte extended response <code>{ack_seq, lora_dbm i8 (0x7F = no LoRa), uwb_level, profile_used}</code>, flags in byte 9 (1 no LoRa, 2 quieter request pending, 4 two stations). Two unanswered extended polls, a legacy answer, 1&nbsp;s of silence or another tag id → legacy polls for 5&nbsp;s. A legacy poll always puts a new tag at maximum. Any old/new mix ranges exactly as before.</li>
+    <li><b>9D UWB is per exchange and per anchor:</b> the tag sends each response at the level that poll asked for and returns to maximum right after, so there is no shared state to get out of step. Louder at once; quieter one 3&nbsp;dB level after 2 good responses and <code>step_interval</code>; one miss → previous level, two → maximum. Boards with the 10&nbsp;dB maximum (HW ≠ 2) only have levels 0–3; the tag answers at its quietest and the anchor takes that as the floor.</li>
+    <li><b>9D/9J LoRa</b> has one owner anchor per station (opcode 22 byte 9 <code>lora_owner</code>, new): quieter steps go request (seq) → ack → confirm → proof, 5 tries each; louder at once; SNR &lt; −7&nbsp;dB (SF12 decodes to −20&nbsp;dB; 10&nbsp;dB margin after one more step; near compression the SX1262 reports only 3–4&nbsp;dB SNR) or signal more than 3 bands under target → maximum at once; no packet for 1.5&nbsp;s → maximum. Floor −9&nbsp;dBm. The tag drops a quieter step after 500&nbsp;ms and everything after 1&nbsp;s without the owner; requests from other anchors only count when louder. The SX126x driver no longer forces 22&nbsp;dBm in <code>SetTxParams</code> (clamps −9…22). The tag also acks in the UWB response only, not the LoRa beacon (its 6-byte format is fixed).</li>
+    <li><b>9F:</b> a miss ends the round; K = 1 with 9K. <b>9G:</b> RX−FP soft threshold 6&nbsp;dB (APS006), LOS preset = the opcode-14 value. <b>Both act only above −90&nbsp;dBm rx level</b>: near sensitivity (the km range) RX−FP is high from noise, the NLOS threshold and "keep the shortest of K" would select noise-triggered early paths and read short; weak ⇒ LOS preset and auto K = 1 (a host-pinned <code>k_max</code> still applies).</li>
+    <li><b>9I opcode 22</b> payload bytes 0–8 as tabled plus byte 9 <code>lora_owner</code>; a shorter payload sets the leading fields; empty = read; the reply is the 10-byte configuration. Bit6 off ⇒ DIAGNOSTIC_STATUS, SEARCH_TWR and STATUS keep their anc3.1.5 lengths. Bit6 on: DIAG 55 bytes; TWR 27 bytes (17–20 tick, 21 tag LoRa dBm, 22 tag UWB level, 23 SignalRssiPkt dBm, 24 <code>k_used</code>, 25 <code>profile_used</code>, 0xFF = unknown); STATUS gains the <code>link_state</code> block after the fault counters (payload 66–75: features, flags [1 extended frames, 2 LoRa owner, 4 handshake in flight, 8 reverting, 16 two stations/backoff], profile req, profile echo, req LoRa dBm, req UWB level, tag LoRa dBm, tag UWB level, LDE preset, k_used). <b>Host:</b> <code>unpack_status_reply</code>'s <code>len == 67</code> long-form test must become <code>&gt;= 67</code>. Opcode 21 reply: 136 bytes with the checksum, <code>n</code> = 0 when 9B is off or before the first range.</li>
+    <li><b>Bench 2026-10-22 (FLY 4 anchors, MOB 3 anchors, tag3.2.0 HW 1).</b> Features off: same rates as anc3.1.5/sC3.0.70 on the same script; every old/new pairing ranges. LoRa loop: 4.4&nbsp;m behind a wall 22 → 0&nbsp;dBm, SignalRssi −50 → −66&nbsp;dBm; MOB at 1.1&nbsp;m from −26&nbsp;dBm (compressed) to −8&nbsp;dBm tag power, −48/−46/−44&nbsp;dBm at the three anchors — out of compression, spread kept, but <b>−70 is unreachable at 1&nbsp;m</b> (the SX1262 floor is −9&nbsp;dBm). Tag back at maximum ≈1.5&nbsp;s after the host stops. 9F/9G behind the wall: K=3 + NLOS preset p10–p90 4.20–4.35&nbsp;m, max 4.44 against 4.25–4.46, max 5.05 at K=1; +10&nbsp;ms per extra exchange. Two stations: both freeze, rates unchanged against features off.</li>
+    <li><b>9D UWB has no usable close-range metric.</b> <code>rx_power_dbm</code> reads −78&nbsp;dBm at 1.2&nbsp;m line of sight and −77&nbsp;dBm at 4.4&nbsp;m behind a wall: the DW1000 estimate goes flat above ≈−85&nbsp;dBm true power (UM 4.7.2), and the AGC keeps the CIR peak at 17–19k counts at both. So the UWB loop never steps down; it fails safe (maximum, as today) but buys nothing. Needs a different input — e.g. a level schedule from the anchor's own range, calibrated against the APS011 bias at known distances — before 9D-UWB is worth enabling.</li>
+    <li><b>9K:</b> the tag tracks the PC ids of polls addressed to it (2&nbsp;s); the anchor also counts its own backoff arming. Either → legacy polls (same 12-byte airtime the §8 timings were tuned on), maximum, K = 1, no requests, until 2&nbsp;s without a sign of a second station.</li>
+  </ul>
+</div>
+
+<div class="callout avoid-break">
+  <b>Bench acceptance.</b>
+  <ul style="margin:4px 0 0; padding-left:16px">
+    <li><b>9A:</b> the DIAGNOSTIC_STATUS reply grows by 8 bytes; prNlos per round near 0 in clean air, toward 1 with a metal box in the path.</li>
+    <li><b>9B:</b> the 32-sample window shows the first-path edge within its first 10 samples in clean air; <code>nlos_features.rs</code> extended with the window features scores clearly above RX−FP on the same recordings.</li>
+    <li><b>9C:</b> the three anchors' <code>exchange_tick_ms</code> sit 10–12&nbsp;ms apart as the worker polls them; <code>lora_signal_rssi</code> ≥ <code>lora_rssi</code> − noise floor.</li>
+    <li><b>9F:</b> tag 3&nbsp;m behind a metal box: the reported range's median error drops by at least half against K=1 on the same setup; round time grows by no more than 25&nbsp;ms at K=3.</li>
+    <li><b>9G:</b> the STATUS preset bit follows a hand placed over the tag within 10 exchanges and clears within 10 after; no chatter at a steady 7&nbsp;dB.</li>
+    <li><b>9H:</b> walking a tag from 50&nbsp;m to 1&nbsp;m, the echoed profile steps 0 → 1 → 2 with no missed round at the switch; pulling the tag away, both sides are back on profile 0 within 1&nbsp;s of the first missed frame; ch 4 only if the bench shows ≥ 80 % valid exchanges at 10&nbsp;m.</li>
+    <li><b>9J:</b> with the LoRa radio of the tag disabled on the bench, a profile change still completes over UWB alone, and the reverse; with frames dropped at random (20 %) the tag never ends up on a configuration the anchor is not listening on (the STATUS link block and the tag's own report always agree within 1&nbsp;s); 100/100.</li>
+    <li><b>9I:</b> with every feature off the anchor's replies, round time and the tag's power are byte-identical to anc3.1.5 (replay compare); REVERT ALL from the tablet lands the tag on profile 0 at maximum within 3 frames, from any state, 20/20 trials.</li>
+    <li><b>9D:</b> tag 1&nbsp;m from a MOB station: <code>SignalRssiPkt</code> settles in −70&nbsp;±&nbsp;6&nbsp;dBm within 3&nbsp;s and the Configuration tab's LoRa spread stops reading "compressed"; UWB <code>rx_power_dbm</code> settles in −80&nbsp;±&nbsp;5&nbsp;dBm and the raw bearing scatter at 1&nbsp;m drops from 12–14° to under 8°. Tag pulled to 50&nbsp;m: both back at maximum within 1&nbsp;s of the first missed frame.</li>
+  </ul>
+</div>
+
 <h2 id="s6"><span class="num">§6</span> &nbsp;Bench verification &amp; at-a-glance</h2>
 
 <div class="callout ok">
@@ -432,6 +612,17 @@ SetAnchor_self_id();
     <li><b>4B</b> — per-device antenna cal</li>
     <li><b>8E</b> — seed backoff RNG</li>
     <li><b>8F</b> — imposter id mask (latent; PC id ≥ 8192)</li>
+  </ul></div>
+  <div class="card i"><div class="h">Next (§9, host request 2026-10-21)</div><ul>
+    <li><b>9F</b> — repeat exchanges, report the minimum (anchor only)</li>
+    <li><b>9G</b> — LDE preset per state (anchor only)</li>
+    <li><b>9A</b> — latch LDE_PPINDX + tick in the diag reply</li>
+    <li><b>9C</b> — exchange tick, signal RSSI, tag TX echo in the TWR reply</li>
+    <li><b>9D / 9H</b> — negotiated TX power and link profile, tag + anchor</li>
+    <li><b>9J</b> — request / ack / confirm / proof handshake, seq numbers, both radios, unilateral revert</li>
+    <li><b>9K</b> — two stations: adaptation frozen on profile 0, backoff untouched, §8 figures as regression gate</li>
+    <li><b>9I</b> — every feature switchable from the app, default off, REVERT ALL</li>
+    <li><b>9B</b> — CIR window, opcode 21</li>
   </ul></div>
   <div class="card v"><div class="h">Verify / when scaling</div><ul>
     <li><b>5A</b> — clean status-bit clearing</li>
