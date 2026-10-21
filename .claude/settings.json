@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "_doc": "Project-wide Claude Code settings. Allows stay conservative: read-only commands plus the firmware build. Flashing (st-flash write) and anything destructive still asks. Personal one-offs belong in .claude/settings.local.json (gitignored).",
+  "permissions": {
+    "allow": [
+      "Bash(ls *)",
+      "Bash(pwd)",
+      "Bash(file *)",
+      "Bash(wc -l *)",
+      "Bash(wc -c *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(diff *)",
+      "Bash(grep *)",
+      "Bash(rg *)",
+      "Bash(find . *)",
+      "Bash(awk *)",
+      "Bash(sed -n *)",
+      "Bash(LC_ALL=C *)",
+      "Bash(make -C */Debug *)",
+      "Bash(make -j*)",
+      "Bash(arm-none-eabi-size *)",
+      "Bash(arm-none-eabi-objdump *)",
+      "Bash(arm-none-eabi-readelf *)",
+      "Bash(arm-none-eabi-nm *)",
+      "Bash(arm-none-eabi-gcc --version)",
+      "Bash(st-info --probe)",
+      "Bash(lsusb*)",
+      "Bash(which *)",
+      "Bash(date)",
+      "Bash(rtk:*)",
+      "mcp__vexp__run_pipeline",
+      "mcp__vexp__get_skeleton",
+      "mcp__vexp__index_status"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(rm -fr *)",
+      "Bash(sudo *)",
+      "Bash(dd *)",
+      "Bash(mkfs *)",
+      "Bash(st-flash erase*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v rtk >/dev/null 2>&1 && rtk hook claude || true"
+          }
+        ]
+      },
+      {
+        "matcher": "Grep|Glob|Regex",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/vexp-guard.sh\"",
+            "timeout": 3000
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/vexp-hint.sh\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/vexp-restore.sh\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
+  "enabledPlugins": {
+    "caveman@caveman": true
+  },
+  "extraKnownMarketplaces": {
+    "caveman": {
+      "source": {
+        "source": "github",
+        "repo": "JuliusBrussee/caveman"
+      }
+    }
+  }
+}

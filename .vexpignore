@@ -1,0 +1,12 @@
+# vexp index excludes — gitignore-style patterns.
+# vexp ignores .git/, node_modules/, dist/, build/, .vexp/ unconditionally.
+
+# Vendored ST HAL / CMSIS / BSP — not our code.
+Drivers/
+
+# CubeIDE generated makefiles and build outputs.
+Debug/
+Release/
+
+# Claude Code state.
+.claude/

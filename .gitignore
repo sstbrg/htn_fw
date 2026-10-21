@@ -14,3 +14,7 @@ objects.list
 # Eclipse / CubeIDE workspace state
 .metadata/
 *.launch.bak
+
+# Claude Code / vexp per-machine state
+.claude/settings.local.json
+.vexp/
