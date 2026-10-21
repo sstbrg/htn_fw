@@ -163,6 +163,7 @@ extern dwt_config_t config;
 uint64 get_system_timestamp(void);
 int	dwmInit();
 void dwConfig(dwt_config_t *config);
+void dwApplyAntennaDelays(void);	//	per-device antenna delays from flash, or the defaults
 int dwRange(void);
 void dwmStatus( void );
 

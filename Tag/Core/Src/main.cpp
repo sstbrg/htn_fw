@@ -42,6 +42,7 @@
 #include "uart_communication.h"
 #include "burn_mode.h"
 #include "fota.h"
+#include <string.h>
 #include "BMI088.h"
 #include "stm32u5xx_it.h"
 /* USER CODE END Includes */
@@ -129,6 +130,41 @@ void printP(const char *s, const char *p)
 //	uint8_t len = snprintf((char*) buff, sizeof(buff), s, p);
 //
 //	HAL_UART_Transmit(&huart1, buff, len, 100);
+}
+
+// Self-id flash page: slot 0 tag id, 1 TX antenna delay, 2 RX antenna delay.
+// Rewrites the page with slots 1-2 replaced; returns 0 on success.
+static uint8_t Save_Antenna_Delays(uint16_t tx, uint16_t rx) {
+	uint16_t page[8];
+	memcpy(page, (const void*)FLASH_SELF_ID_ADDRESS, sizeof(page));
+	page[1] = tx;
+	page[2] = rx;
+	if (Flash_Erase(FLASH_SELF_ID_USER_BANK, FLASH_SELF_ID_PAGE) != HAL_OK)
+		return 1;
+	return Flash_Write(FLASH_SELF_ID_ADDRESS, (uint64_t*)page, 1) != HAL_OK;
+}
+
+// UART_OPCODE_ANT_DELAY: {tx u16, rx u16} sets (0/0xFFFF = back to the default), empty = read.
+// Reply {status, tx u16, rx u16} with the values in flash (0xFFFF = default in use).
+static void Antenna_Delay_Command(S_UART_MESSAGE *msg, S_UART_MESSAGE *reply) {
+	static uint8_t r[8];
+	uint8_t status = 0;
+	(void)reply;
+	if (msg->header.length >= sizeof(S_HEADER) + 4 + 1) {
+		uint16_t tx, rx;
+		memcpy(&tx, &msg->buff[0], 2);
+		memcpy(&rx, &msg->buff[2], 2);
+		status = Save_Antenna_Delays(tx, rx);
+		dwApplyAntennaDelays();
+	}
+	const uint16_t *page = (const uint16_t*)FLASH_SELF_ID_ADDRESS;
+	r[0] = msg->header.opcode;
+	r[1] = sizeof(r);
+	r[2] = status;
+	memcpy(&r[3], &page[1], 2);
+	memcpy(&r[5], &page[2], 2);
+	r[7] = checksum(r, sizeof(r));
+	UART_SendMessage(r, sizeof(r));
 }
 
 /* USER CODE END 0 */
@@ -289,7 +325,8 @@ int main(void)
 			case UART_OPCODE_SET_ID:
 			{
 //				uint16_t new_id = msg.set_id_req.new_id;
-				uint16_t new_id[8] = {msg.set_id_req.new_id,0xFFFF,0xFFFF,0xFFFF,0xFFFF,0xFFFF,0xFFFF,0xFFFF};
+				const uint16_t *page = (const uint16_t*)FLASH_SELF_ID_ADDRESS;	// keep the antenna delays
+				uint16_t new_id[8] = {msg.set_id_req.new_id,page[1],page[2],0xFFFF,0xFFFF,0xFFFF,0xFFFF,0xFFFF};
 
 				//uint64_t Data = msg.set_id_req.new_id;
 				uint8_t error;
@@ -311,6 +348,11 @@ int main(void)
 				dwmStatus();
 				Lora_Status();
 				UART_Reply_Status(&msg,&reply);
+				break;
+			}
+			case UART_OPCODE_ANT_DELAY:
+			{
+				Antenna_Delay_Command(&msg, &reply);
 				break;
 			}
 			case UART_OPCODE_LOOPBACK:

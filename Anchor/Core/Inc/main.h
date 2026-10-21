@@ -145,9 +145,10 @@ extern "C" {
  * anc3.1.2	[changed] battery gauge read on every anchor; FOTA reports 255 only when no gauge answers
  * anc3.1.3	[added] FOTA LEDs: target blinks from the handshake, loader link LED while loading
  * anc3.1.4	[fixed] a tag stays awake while it counts down as FOTA target
+ * anc3.1.5	[added] backoff arm-once, release on opcode 19=0, runtime window {top,min}; status backoff in ms left; per-anchor random seed; imposter id mask; SET_ID refreshes UWB ids; UART error callback re-arms RX; antenna delays from flash (opcode 20); LDE_CFG1 survives dwConfig; status-bit clearing and frame-length checks
  */
 
-#define VERSION "anc3.1.4"
+#define VERSION "anc3.1.5"
 
 
 #define IS_TAG false

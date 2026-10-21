@@ -9,7 +9,8 @@ void Update_Cash_Mem(void);
 
 uint16_t Flash_Increase_ResetCounter(){
 		reset_counter = reset_counter + 1;
-		uint16_t new_id[8] = {PC_ID,0xFFFF,0xFFFF,0xFFFF,0xFFFF,0xFFFF,0xFFFF,reset_counter};
+		const uint16_t *page = (const uint16_t*)FLASH_SELF_ID_ADDRESS;	// keep antenna delays (slots 1-2)
+	uint16_t new_id[8] = {PC_ID,page[1],page[2],page[3],page[4],page[5],page[6],reset_counter};
 		uint8_t error;
 		error = Flash_Erase(FLASH_SELF_ID_USER_BANK, FLASH_SELF_ID_PAGE) != HAL_OK;
 		if (error){
@@ -30,7 +31,8 @@ uint16_t Flash_Read_ResetCounter(void){
 
 uint16_t Flash_Reset_ResetCounter(){
 	reset_counter = 0;
-	uint16_t new_id[8] = {PC_ID,0xFFFF,0xFFFF,0xFFFF,0xFFFF,0xFFFF,0xFFFF,reset_counter};
+	const uint16_t *page = (const uint16_t*)FLASH_SELF_ID_ADDRESS;	// keep antenna delays (slots 1-2)
+	uint16_t new_id[8] = {PC_ID,page[1],page[2],page[3],page[4],page[5],page[6],reset_counter};
 	uint8_t error;
 	error = Flash_Erase(FLASH_SELF_ID_USER_BANK, FLASH_SELF_ID_PAGE) != HAL_OK;
 	if (error){

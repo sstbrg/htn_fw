@@ -260,7 +260,13 @@ extern DwmInfo_t dwmInfo;
 /* Declaration of static functions. */
 
 
+extern uint16_t backoff_top_ms;		// backoff window: random() % top + min (runtime, opcode 19)
+extern uint16_t backoff_min_ms;
+extern uint8_t lde_cfg1;			// LDE_CFG1 (NTM/PMULT), re-applied by dwConfig()
+
 int	dwmInit( void );				// 	Init DW
+void dwSetFrameIds(void);			//	frame ids from dwmInfo.mine_pc_id/anchor_id (boot and SET_ID)
+void dwApplyAntennaDelays(void);	//	per-device antenna delays from flash, or the defaults
 void dwmStatus( void );				//	initialization status
 void dwt_configenable_user_accumem_read(bool bit_set);
 void dwmDiagStatus( void );			//	Diagnostic status

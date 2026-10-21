@@ -263,6 +263,7 @@ typedef enum
 	/*13*/RESERVED_13,
 	/*14*/RESERVED_14,
 	/*15*/UART_OPCODE_UPDATE_FW,
+	/*20*/UART_OPCODE_ANT_DELAY = 20,		// per-device antenna delays {tx, rx} in flash; empty = read
 
 
 	/*EE*/UART_OPCODE_ERROR = 0xEE,
