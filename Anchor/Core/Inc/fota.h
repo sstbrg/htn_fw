@@ -15,6 +15,11 @@
  *   target writes bank 2 from RAM (verify + retry), resets; bootloader checks CRC
  *   flasher --UWB (normal config)--> target : HELLO(query) to confirm new CRC/version
  *
+ * Discovery: the flasher broadcasts DISCOVER; every target in range answers
+ * with DISCOVER_ACK (id, kind, version, battery, CRC) in a random slot.
+ * Data rate: starts at the requested rate and steps down after a lost link.
+ * Battery: target and flasher refuse below FOTA_MIN_BATTERY (0xFF = mains).
+ *
  * The image is received into RAM and only written once its CRC is verified,
  * so a dropped link leaves the running firmware untouched.
  *
@@ -41,6 +46,8 @@ extern "C" {
 #define UART_OPCODE_FOTA_QUERY		0x45	// {target} ask a target for its version/CRC
 #define UART_OPCODE_FOTA_ABORT		0x46	// abort the running session
 #define UART_OPCODE_FOTA_EXIT		0x47	// leave FOTA flasher mode (back to normal operation)
+#define UART_OPCODE_FOTA_DISCOVER	0x48	// find FOTA targets in UWB range (broadcast)
+#define UART_OPCODE_FOTA_DISCOVER_LIST	0x49	// {start} read discovered targets, 10 per reply
 #define UART_OPCODE_DW_SPI_TEST		0x4F	// diagnostic: 41-byte DW1000 SPI write/read-back (USR_SFD, restored)
 
 /* ---------------- UWB protocol ---------------- */
@@ -54,6 +61,8 @@ enum fota_frame_type {
 	FOTA_COMMIT,
 	FOTA_COMMIT_ACK,
 	FOTA_ABORT,
+	FOTA_DISCOVER,		// broadcast (des = FOTA_BROADCAST); targets answer after a random slot
+	FOTA_DISCOVER_ACK,	// payload = fota_hello_ack_t
 };
 
 enum fota_kind {
@@ -61,7 +70,7 @@ enum fota_kind {
 	FOTA_KIND_TAG = 1,
 };
 
-enum fota_rate {		// UWB setting used for the data phase
+enum fota_rate {		// UWB setting used for the data phase; the flasher steps down on link loss
 	FOTA_RATE_110K = 0,
 	FOTA_RATE_850K = 1,
 	FOTA_RATE_6M8 = 2,
@@ -82,9 +91,13 @@ enum fota_status_code {
 	FOTA_ERR_VERIFY,	// target came back with a different CRC
 	FOTA_ERR_ABORTED,
 	FOTA_ERR_RATE,
+	FOTA_ERR_BATTERY,	// below FOTA_MIN_BATTERY (flasher or target)
 };
 
 #define FOTA_HELLO_QUERY	0x01	// HELLO flag: report info only, don't arm
+#define FOTA_BROADCAST		0xFFFF
+#define FOTA_MIN_BATTERY	30		// %; battery 0xFF = externally powered, always allowed
+#define FOTA_DISCOVER_MAX	32
 
 #define FOTA_COUNTDOWN_MS	5000	// target starts receiving this long after HELLO_ACK
 #define FOTA_MAX_IMAGE		(512u * 1024u)
@@ -148,6 +161,15 @@ typedef struct {
 
 /* UART payloads */
 typedef struct {
+	uint16_t id;
+	uint8_t kind;
+	uint8_t hw;
+	uint8_t battery;
+	char sw[9];
+	uint32_t app_crc;
+} fota_disc_entry_t;
+
+typedef struct {
 	uint16_t target;
 	uint8_t kind;
 	uint8_t rate;
@@ -187,6 +209,7 @@ enum fota_flasher_state {
 	FL_VERIFY_WAIT,
 	FL_VERIFY,
 	FL_QUERY,
+	FL_DISCOVER,
 	FL_DONE,
 	FL_FAILED,
 };
