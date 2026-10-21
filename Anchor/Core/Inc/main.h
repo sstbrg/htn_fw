@@ -142,9 +142,10 @@ extern "C" {
  * anc3.1.0	[added] FOTA over UWB (fota.c): FOTA flasher mode via UART opcodes 0x40-0x47,
  * 				FOTA target in dwScanMode. Image received into RAM, CRC checked, written from RAM.
  * anc3.1.1	[added] FOTA discovery, auto data-rate fallback, battery check
+ * anc3.1.2	[changed] battery gauge read on every anchor; FOTA reports 255 only when no gauge answers
  */
 
-#define VERSION "anc3.1.1"
+#define VERSION "anc3.1.2"
 
 
 #define IS_TAG false

@@ -204,9 +204,9 @@ void UART_Reply_Status(S_UART_MESSAGE *msg, S_UART_MESSAGE *reply)
 	reply->op_stt_rply.errors.bits.no_UWB = dwmInfo.no_uwb;
 	reply->op_stt_rply.errors.bits.no_IMU = bmi.no_IMU;
 	reply->op_stt_rply.fault_counter = fault_counter;
-	reply->op_stt_rply.battery = 0;
-	if (dwmInfo.anchor_id == ANCHOR_WITH_BATTERY_CONNECTION){
-		reply->op_stt_rply.battery = AbsoluteStateOfCharge(&hi2c2);
+	{	// any anchor with a battery gauge on I2C2, not only cable id 3; 0 = no gauge, as before
+		uint8_t soc = RRC2040_Soc(&hi2c2);
+		reply->op_stt_rply.battery = (soc == RRC2040_NO_GAUGE) ? 0 : soc;
 	}
 
 	reply->op_stt_rply.checksum = checksum((uint8_t*) reply, reply->header.length);

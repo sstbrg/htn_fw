@@ -32,6 +32,8 @@ uint16_t RRC2040_GetRemainingCapacity(I2C_HandleTypeDef *hi2c);
 uint16_t RRC2040_GetFullCapacity(I2C_HandleTypeDef *hi2c);
 uint16_t RRC2040_GetBatteryStatus(I2C_HandleTypeDef *hi2c);
 uint8_t AbsoluteStateOfCharge(I2C_HandleTypeDef *hi2c);
+#define RRC2040_NO_GAUGE 0xFF
+uint8_t RRC2040_Soc(I2C_HandleTypeDef *hi2c);
 uint8_t Get_Battery_Soc(void);
 
 #endif
