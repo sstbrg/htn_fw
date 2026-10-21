@@ -5,7 +5,7 @@
   fw_release.py bump anchor [--part patch|minor|major | --set 3.2.0] [--note "what changed"]
   fw_release.py build tag                # build + save releases/tag/<version>/
   fw_release.py new anchor --part minor --note "..."   # bump + build + save
-  fw_release.py publish anchor          # commit the bump, push, CI publishes the GitHub release
+  fw_release.py import                  # unpack release zips dropped into releases/
 
 A release directory holds the .bin/.hex/.elf/.map and manifest.json
 (version, bootloader CRC, size, sha256, git commit, toolchain, date).
@@ -133,8 +133,13 @@ def save(kind, note=None, log=print):
     return out
 
 
-def releases():
-    """All saved releases, newest version first."""
+def releases(log=None):
+    """All saved releases, newest version first (unpacks zips dropped into releases/ first)."""
+    try:
+        import_zips(log or (lambda *_: None))
+    except (RuntimeError, OSError, ValueError, KeyError) as e:
+        if log:
+            log(f"release zip not imported: {e}")
     rel = []
     for m in (ROOT / "releases").glob("*/*/manifest.json"):
         try:
@@ -151,23 +156,45 @@ def releases():
     return sorted(rel, key=key, reverse=True)
 
 
-SOURCES = ("Core", "Debug", "Drivers", "Middlewares")  # per project; a change here needs a VERSION bump
+def released_shas(kind, ver):
+    """sha256 values recorded for <kind> <ver> in existing GitHub releases (CI only; uses gh)."""
+    import tempfile
+    import zipfile
+    lst = subprocess.run(["gh", "release", "list", "--limit", "200", "--json", "tagName", "--jq", ".[].tagName"],
+                         cwd=ROOT, capture_output=True, text=True, check=True).stdout.split()
+    shas = set()
+    for tag in [t for t in lst if re.search(rf"(^|-){re.escape(ver)}(-|$)", t)]:
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["gh", "release", "download", tag, "--dir", tmp, "--pattern", "*.zip",
+                            "--pattern", "*.manifest.json"], cwd=ROOT, capture_output=True)
+            for z in Path(tmp).glob("*.zip"):
+                with zipfile.ZipFile(z) as zf:
+                    for n in zf.namelist():
+                        if n.startswith(f"{kind}/") and n.endswith("/manifest.json"):
+                            d = json.loads(zf.read(n))
+                            if d.get("version") == ver:
+                                shas.add(d["sha256"])
+            for m in Path(tmp).glob(f"{ver}.manifest.json"):     # releases from before the single zip
+                shas.add(json.loads(m.read_text())["sha256"])
+    return shas
 
 
-def ci_check_bump(base):
-    """Fail if a project's sources changed against `base` but its VERSION did not."""
+def ci_check_version():
+    """CI, after `build`: an image may keep its version only if it is byte-identical to the
+    image already released under that version. A changed image needs a VERSION bump."""
     bad = []
     for kind, p in PROJECTS.items():
-        paths = [f"{p['dir']}/{s}" for s in SOURCES] + [f"{p['dir']}/*.ld"]
-        changed = subprocess.run(["git", "diff", "--quiet", f"{base}...HEAD", "--", *paths], cwd=ROOT).returncode != 0
-        old = subprocess.run(["git", "show", f"{base}:{p['dir']}/Core/Inc/main.h"], cwd=ROOT,
-                             capture_output=True).stdout.decode("latin-1")
-        m = VERSION_RE.search(old)
-        old_ver = f"{m.group(1)}{m.group(2)}.{m.group(3)}.{m.group(4)}{m.group(5)}" if m else None
-        new_ver = version_string(kind)
-        print(f"{kind}: sources {'changed' if changed else 'unchanged'}, VERSION {old_ver} -> {new_ver}")
-        if changed and old_ver == new_ver:
-            bad.append(f"{kind} sources changed but VERSION is still {new_ver}: bump it (tools/htn_fota/fw_release.py bump {kind})")
+        ver = version_string(kind)
+        img = (ROOT / p["dir"] / "Debug" / f"{p['dir']}.bin").read_bytes()
+        sha = hashlib.sha256(img).hexdigest()
+        shas = released_shas(kind, ver)
+        if not shas:
+            print(f"{kind}: {ver} not released yet: OK")
+        elif sha in shas:
+            print(f"{kind}: {ver} image identical to the released one: OK")
+        else:
+            bad.append(f"{kind}: the {ver} image differs from the released {ver}: bump VERSION "
+                       f"(tools/htn_fota/fw_release.py bump {kind})")
     for b in bad:
         print(f"::error::{b}")
     return 1 if bad else 0
@@ -178,115 +205,92 @@ def release_tag():
 
 
 def ci_publish(prerelease=False):
-    """Create the GitHub release for the current versions from releases/ (after `build`). Skips if it exists."""
+    """CI: publish the GitHub release for the current versions with a single asset,
+    htn-fw-anc<ver>-tag<ver>.zip (anchor/<ver>/ and tag/<ver>/ with .bin/.hex/.elf/manifest).
+
+    If the release already exists, make sure the zip is its only asset."""
     tag = release_tag()
-    if subprocess.run(["gh", "release", "view", tag], cwd=ROOT, capture_output=True).returncode == 0:
-        print(f"release {tag} already exists: versions not bumped, nothing published")
+    zpath = release_zip(tag)
+    view = subprocess.run(["gh", "release", "view", tag, "--json", "assets", "--jq", ".assets[].name"],
+                          cwd=ROOT, capture_output=True, text=True)
+    if view.returncode == 0:
+        names = view.stdout.split()
+        if zpath.name not in names:
+            subprocess.run(["gh", "release", "upload", tag, str(zpath)], cwd=ROOT, check=True)
+            print(f"release {tag} exists: added {zpath.name}")
+        for name in names:
+            if name != zpath.name:
+                subprocess.run(["gh", "release", "delete-asset", tag, name, "--yes"], cwd=ROOT, check=True)
+                print(f"release {tag}: removed loose asset {name}")
         return 0
-    assets, notes = [], [f"Firmware built from {git_info()['commit']} by CI.", "", "| board | version | size | CRC (bootloader) | sha256 |", "|---|---|---|---|---|"]
-    stage = ROOT / "releases" / "_publish"
-    stage.mkdir(parents=True, exist_ok=True)
+    notes = [f"Firmware built from {git_info()['commit']} by CI.", "",
+             "| board | version | size | CRC (bootloader) | sha256 |", "|---|---|---|---|---|"]
     for kind, p in PROJECTS.items():
         ver = version_string(kind)
-        d = ROOT / "releases" / kind / ver[len(p["prefix"]):]
-        man = json.loads((d / "manifest.json").read_text())
-        for ext in ("bin", "hex", "elf"):
-            src = d / f"{p['dir']}.{ext}"
-            dst = stage / f"{ver}.{ext}"
-            shutil.copy2(src, dst)
-            assets.append(dst)
-        mdst = stage / f"{ver}.manifest.json"
-        shutil.copy2(d / "manifest.json", mdst)
-        assets.append(mdst)
-        notes.append(f"| {kind} | {ver} | {man['size']} B | {man['crc']} | `{man['sha256'][:16]}…` |")
-    notes += ["", "Flash over USB: `tools/htn_fota/htn_fw.py --port <port> flash <ver>.bin`.",
-              "Over the air: `tools/htn_fota/fw_wizard.py` (Download from GitHub), or `tools/htn_fota/htn_fw.py fota <id> <ver>.bin`.",
+        man = json.loads((ROOT / "releases" / kind / ver[len(p["prefix"]):] / "manifest.json").read_text())
+        notes.append(f"| {kind} | {ver} | {man['size']} B | {man['crc']} | `{man['sha256'][:16]}...` |")
+    notes += ["", f"Download `{zpath.name}` and put it (or its unpacked contents) into the FOTA tools'",
+              "`releases/` folder; the wizard lists it after Refresh.",
+              "Flash over USB: `tools/htn_fota/htn_fw.py --port <port> flash releases/<kind>/<ver>/<Proj>.bin`.",
               "The .hex carries its own addresses (0x08200000); never write a .bin to 0x08000000 (bootloader)."]
     subprocess.run(["gh", "release", "create", tag, "--title", tag.replace("fw-", "Firmware "),
-                    "--notes", "\n".join(notes), *(["--prerelease"] if prerelease else []), *map(str, assets)],
+                    "--notes", "\n".join(notes), *(["--prerelease"] if prerelease else []), str(zpath)],
                    cwd=ROOT, check=True)
-    print(f"published {tag}")
+    print(f"published {tag} ({zpath.name})")
     return 0
 
 
-def publish(kind, log=print):
-    """Commit the VERSION bump of `kind`, push the branch and let CI build and publish the GitHub release.
+def import_zips(log=print):
+    """Unpack release zips dropped into releases/ (htn-fw-*.zip from a GitHub release).
 
-    The release must match committed code, so this refuses if anything else in
-    the firmware projects is uncommitted. On main the push itself triggers the
-    release; on other branches the workflow is started by hand (pre-release),
-    which GitHub allows once .github/workflows/firmware.yml is on main.
-    Returns a short description of what was started."""
-    def git(*a, check=True):
-        r = subprocess.run(["git", *a], cwd=ROOT, capture_output=True, text=True)
-        if check and r.returncode:
-            raise RuntimeError(f"git {' '.join(a)}: {r.stderr.strip() or r.stdout.strip()}")
-        return r.stdout.rstrip()    # keep leading spaces: `status --porcelain` lines start with " M"
-    mh = str(main_h(kind).relative_to(ROOT))
-    dirty = [l[3:] for l in git("status", "--porcelain", "--untracked-files=no", "--", "Anchor", "Tag",
-                                "bootloader_hitan").splitlines()]
-    others = [f for f in dirty if f != mh]
-    if others:
-        raise RuntimeError("commit or stash these firmware changes first, the release must match committed code: "
-                           + ", ".join(others[:5]) + (" ..." if len(others) > 5 else ""))
-    ver = version_string(kind)
-    branch = git("rev-parse", "--abbrev-ref", "HEAD")
-    if mh in dirty:
-        git("commit", "-m", f"release: {ver}", "--", mh)
-        log(f"committed version bump {ver} on {branch}")
-    git("push")
-    log(f"pushed {branch}")
-    tag = release_tag()
-    if branch == "main":
-        return f"pushed main: CI builds and publishes {tag}"
-    r = subprocess.run(["gh", "workflow", "run", "firmware.yml", "--ref", branch], cwd=ROOT,
-                       capture_output=True, text=True)
-    if r.returncode:
-        raise RuntimeError("could not start the CI release workflow (it must already be on main): "
-                           + (r.stderr.strip() or r.stdout.strip()))
-    return f"CI started on {branch}: it builds and publishes pre-release {tag} (see GitHub Actions)"
+    A zip holds <kind>/<version>/{<Proj>.bin,.hex,.elf,manifest.json}. Each image is
+    checked against its manifest sha256; already-imported zips are skipped."""
+    import zipfile
+    done = []
+    for z in sorted((ROOT / "releases").glob("*.zip")):
+        with zipfile.ZipFile(z) as zf:
+            names = zf.namelist()
+            for man in [n for n in names if re.fullmatch(r"(anchor|tag)/[0-9.]+/manifest\.json", n)]:
+                d = json.loads(zf.read(man))
+                folder = man.rsplit("/", 1)[0]
+                out = ROOT / "releases" / folder
+                current = out / "manifest.json"
+                if current.exists() and json.loads(current.read_text()).get("sha256") == d.get("sha256"):
+                    continue
+                img = zf.read(f"{folder}/{d['bin']}")
+                if hashlib.sha256(img).hexdigest() != d["sha256"]:
+                    raise RuntimeError(f"{z.name}: {folder}/{d['bin']} does not match its manifest sha256")
+                out.mkdir(parents=True, exist_ok=True)
+                for n in names:
+                    if n.startswith(folder + "/") and not n.endswith("/") and "/" not in n[len(folder) + 1:]:
+                        (out / n[len(folder) + 1:]).write_bytes(zf.read(n))
+                log(f"imported {d['version']} from {z.name} -> releases/{folder}")
+                done.append(out)
+    return done
 
 
-def fetch(tag=None, log=print):
-    """Download GitHub release assets into releases/<kind>/<version>/ (latest release if tag is None)."""
-    import tempfile
-    args = ["gh", "release", "download"] + ([tag] if tag else []) + ["--pattern", "*.bin", "--pattern", "*.manifest.json",
-                                                                     "--pattern", "*.hex", "--pattern", "*.elf"]
-    got = []
-    with tempfile.TemporaryDirectory() as tmp:
-        subprocess.run(args + ["--dir", tmp], cwd=ROOT, check=True, capture_output=True, text=True)
-        for man in Path(tmp).glob("*.manifest.json"):
-            d = json.loads(man.read_text())
-            kind, ver = d["kind"], d["version"]
-            out = ROOT / "releases" / kind / ver[len(PROJECTS[kind]["prefix"]):]
-            out.mkdir(parents=True, exist_ok=True)
-            for ext in ("bin", "hex", "elf"):
-                f = Path(tmp) / f"{ver}.{ext}"
-                if f.exists():
-                    shutil.copy2(f, out / f"{PROJECTS[kind]['dir']}.{ext}")
-            d["bin"] = f"{PROJECTS[kind]['dir']}.bin"
-            img = (out / d["bin"]).read_bytes()
-            if hashlib.sha256(img).hexdigest() != d["sha256"]:
-                raise SystemExit(f"{ver}: downloaded image does not match its manifest sha256")
-            d["note"] = (d.get("note") or "") + " [GitHub]"
-            (out / "manifest.json").write_text(json.dumps(d, indent=2) + "\n")
-            log(f"fetched {ver} -> {out.relative_to(ROOT)}")
-            got.append(out)
-    return got
+def release_zip(tag):
+    """releases/<tag>.zip with anchor/<ver>/ and tag/<ver>/ of the current versions (for CI)."""
+    import zipfile
+    zpath = ROOT / "releases" / f"htn-{tag}.zip"
+    with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as zf:
+        for kind, p in PROJECTS.items():
+            ver = version_string(kind)[len(p["prefix"]):]
+            d = ROOT / "releases" / kind / ver
+            for f in sorted(d.iterdir()):
+                if f.suffix in (".bin", ".hex", ".elf") or f.name == "manifest.json":
+                    zf.write(f, f"{kind}/{ver}/{f.name}")
+    return zpath
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("list")
-    p = sub.add_parser("ci-check-bump", help="CI: fail if sources changed without a VERSION bump")
-    p.add_argument("base")
-    p = sub.add_parser("ci-publish", help="CI: create the GitHub release from releases/")
+    sub.add_parser("ci-check-version", help="CI: fail if an image changed but kept a released VERSION")
+    p = sub.add_parser("ci-publish", help="CI: create the GitHub release (images + zip) from releases/")
     p.add_argument("--prerelease", action="store_true")
-    p = sub.add_parser("publish", help="commit the version bump, push, and let CI publish the GitHub release")
-    p.add_argument("kind", choices=PROJECTS)
-    p = sub.add_parser("fetch", help="download a GitHub release into releases/")
-    p.add_argument("tag", nargs="?")
+    sub.add_parser("import", help="unpack release zips dropped into releases/")
     for name in ("bump", "new"):
         p = sub.add_parser(name)
         p.add_argument("kind", choices=PROJECTS)
@@ -299,15 +303,13 @@ def main():
     p.add_argument("--note")
     a = ap.parse_args()
 
-    if a.cmd == "ci-check-bump":
-        return ci_check_bump(a.base)
+    if a.cmd == "ci-check-version":
+        return ci_check_version()
     if a.cmd == "ci-publish":
         return ci_publish(a.prerelease)
-    if a.cmd == "publish":
-        print(publish(a.kind))
-        return 0
-    if a.cmd == "fetch":
-        fetch(a.tag)
+    if a.cmd == "import":
+        if not import_zips():
+            print("no new release zips in releases/")
         return 0
     if a.cmd == "list":
         for d in releases():

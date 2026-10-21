@@ -338,7 +338,8 @@ int main(void)
 			case UART_OPCODE_RESET_RESET_COUNTER:
 				{
 					reset_counter = 0;
-					uint16_t new_id[8] = {dwmInfo.mine_pc_id,0xFFFF,0xFFFF,0xFFFF,0xFFFF,0xFFFF,0xFFFF,reset_counter};
+					const uint16_t *page = (const uint16_t*)FLASH_SELF_ID_ADDRESS;	// keep antenna delays (slots 1-2)
+					uint16_t new_id[8] = {dwmInfo.mine_pc_id,page[1],page[2],page[3],page[4],page[5],page[6],reset_counter};
 					uint8_t error;
 					error = Flash_Erase(FLASH_SELF_ID_USER_BANK, FLASH_SELF_ID_PAGE) != HAL_OK;
 					if (error){
