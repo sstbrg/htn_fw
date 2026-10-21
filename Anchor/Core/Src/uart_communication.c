@@ -9,6 +9,7 @@
 #include "uart_communication.h"
 #include "usart.h"
 #include <string.h>
+#include <stddef.h>
 #include "stm32u5xx_it.h"
 #include "rrc2040driver.h"
 
@@ -21,11 +22,29 @@ extern Fault_Counter fault_counter;
 extern uint8_t HW_Version;
 extern uint32_t _1ms_tick;
 
-// Backoff time left in ms; 0 once the deadline has passed, even before a SEARCH_TWR clears it.
-static uint32_t backoff_left_ms(void) {
-	return (dwmInfo.backoff_timer > _1ms_tick) ? (dwmInfo.backoff_timer - _1ms_tick) : 0;
+// Backoff time left in ms, wrap-safe; 0 = not backing off. An expired (or implausible) deadline
+// is cleared here, so a stale value can never look like a future one after the tick wraps.
+uint32_t Backoff_Left(void) {
+	uint32_t d = dwmInfo.backoff_timer;
+	if (d == 0)
+		return 0;
+	int32_t left = (int32_t)(d - _1ms_tick);
+	if (left <= 0 || left > BACKOFF_MAX_MS) {
+		dwmInfo.backoff_timer = 0;
+		return 0;
+	}
+	return (uint32_t)left;
 }
 extern I2C_HandleTypeDef hi2c2;
+
+// Replies that grew in anc3.2.0 end at `legacy_len` (anc3.1.5's length) unless LINK_F_REPLY_EXT is on.
+static void UART_SendSized(S_UART_MESSAGE *reply, uint8_t full_len, uint8_t legacy_len) {
+	uint8_t len = (link_cfg.features & LINK_F_REPLY_EXT) ? full_len : legacy_len;
+	reply->header.length = len;
+	((uint8_t*)reply)[len - 1] = checksum((uint8_t*) reply, len);
+	UART_SendMessage(reply, len);
+}
+#define LEGACY_LEN(type, first_new) (sizeof(S_HEADER) + offsetof(type, first_new) + 1)
 
 
 uint8_t checksum(const uint8_t *uart_tx_buffer, const uint8_t length)
@@ -111,7 +130,7 @@ void UART_Reply_BIT_Control(S_UART_MESSAGE *msg, S_UART_MESSAGE *reply){
 	reply->op_bit_rply.tag_imposter = dwmInfo.tag_imposter;
 	//	errors
 	reply->op_bit_rply.errors.all = 0;
-	reply->op_bit_rply.errors.bits.UWB_Backoff = (backoff_left_ms() != 0);
+	reply->op_bit_rply.errors.bits.UWB_Backoff = (Backoff_Left() != 0);
 	reply->op_bit_rply.errors.bits.no_LoRa = lora_rxInfo.no_lora;
 	reply->op_bit_rply.errors.bits.no_UWB = dwmInfo.no_uwb;
 	reply->op_bit_rply.errors.bits.no_IMU = bmi.no_IMU;
@@ -131,7 +150,7 @@ void UART_Reply_Wake_up(S_UART_MESSAGE *msg, S_UART_MESSAGE *reply)
 	reply->wakeup_rply.errors.all = 0;
 	reply->wakeup_rply.errors.bits.no_LoRa = lora_rxInfo.no_lora;
 	reply->wakeup_rply.errors.bits.no_UWB = dwmInfo.no_uwb;
-	reply->wakeup_rply.errors.bits.UWB_Backoff = (backoff_left_ms() != 0);
+	reply->wakeup_rply.errors.bits.UWB_Backoff = (Backoff_Left() != 0);
 	reply->wakeup_rply.checksum = checksum((uint8_t*) reply, reply->header.length);
 
 	UART_SendMessage(reply, reply->header.length);
@@ -150,10 +169,12 @@ void UART_Reply_Search_Twr(S_UART_MESSAGE *msg, S_UART_MESSAGE *reply)
 	if (lora_rxInfo.tag_id_msg_valid != lora_rxInfo.tag_id){ // if the last lora rx valid is not equal to the current search(twr opcode) id.
 		lora_rxInfo.rssi = 0;
 		lora_rxInfo.snr = 0;
+		lora_rxInfo.signal_rssi = 0;
 		lora_rxInfo.lora_msg_index = 0;
 		lora_rxInfo.new_data = LR_NO_VALID_DATA;
 	}
 	reply->op_twr_rply.data_status = dwmInfo.dw_ready | lora_rxInfo.new_data;// data_validity
+	uint8_t uwb_valid = (dwmInfo.dw_ready == VALID_DATA);
 
 			//reset UWB data valid flag
 	dwmInfo.dw_ready = DW_NO_VALID_DATA;
@@ -162,10 +183,23 @@ void UART_Reply_Search_Twr(S_UART_MESSAGE *msg, S_UART_MESSAGE *reply)
 	reply->op_twr_rply.lora_rssi = lora_rxInfo.rssi;
 	reply->op_twr_rply.lora_snr = lora_rxInfo.snr;
 	reply->op_twr_rply.counter = lora_rxInfo.lora_msg_index; //counter
+	reply->op_twr_rply.lora_signal_rssi = lora_rxInfo.signal_rssi;
+	if (uwb_valid) {	// this round's reported exchange
+		reply->op_twr_rply.exchange_tick_ms = dwmInfo.exchange_tick_ms;
+		reply->op_twr_rply.tag_lora_tx_dbm = dwmInfo.tag_lora_tx_dbm;
+		reply->op_twr_rply.tag_uwb_tx_level = dwmInfo.tag_uwb_tx_level;
+	} else {
+		reply->op_twr_rply.exchange_tick_ms = 0;
+		reply->op_twr_rply.tag_lora_tx_dbm = LINK_LORA_UNKNOWN;
+		reply->op_twr_rply.tag_uwb_tx_level = LINK_UWB_UNKNOWN;
+	}
+	reply->op_twr_rply.k_used = link_st.k_used;
+	reply->op_twr_rply.profile_used = link_st.ext ? link_st.echo_profile : 0xFF;
 
 			//reset Lora data every send
 	lora_rxInfo.rssi = 0;
 	lora_rxInfo.snr = 0;
+	lora_rxInfo.signal_rssi = 0;
 	lora_rxInfo.lora_msg_index = 0;
 	lora_rxInfo.new_data = LR_NO_VALID_DATA; // old data
 
@@ -179,11 +213,9 @@ void UART_Reply_Search_Twr(S_UART_MESSAGE *msg, S_UART_MESSAGE *reply)
 	reply->op_twr_rply.errors.all = 0;
 	reply->op_twr_rply.errors.bits.no_LoRa = lora_rxInfo.no_lora;
 	reply->op_twr_rply.errors.bits.no_UWB = dwmInfo.no_uwb;
-	reply->op_twr_rply.errors.bits.UWB_Backoff = (backoff_left_ms() != 0);
+	reply->op_twr_rply.errors.bits.UWB_Backoff = (Backoff_Left() != 0);
 	reply->op_twr_rply.errors.bits.wrong_UWB_ID = dwmInfo.wrong_ID;
-	reply->op_twr_rply.checksum = checksum((uint8_t*) reply, reply->header.length);
-
-	UART_SendMessage(reply, reply->header.length);
+	UART_SendSized(reply, reply->header.length, LEGACY_LEN(S_UART_OP_TWR_REPLY, exchange_tick_ms));
 }
 
 void UART_Reply_Status(S_UART_MESSAGE *msg, S_UART_MESSAGE *reply)
@@ -196,7 +228,7 @@ void UART_Reply_Status(S_UART_MESSAGE *msg, S_UART_MESSAGE *reply)
 	reply->op_stt_rply.is_tag = IS_TAG;
 	//	UWB
 	reply->op_stt_rply.UWB_tag_status = dwmInfo.tag_no_lora;
-	reply->op_stt_rply.UWB_backoff = backoff_left_ms();	// ms left, 0 = not backing off
+	reply->op_stt_rply.UWB_backoff = Backoff_Left();	// ms left, 0 = not backing off
 	reply->op_stt_rply.UWB_last_status_reg = dwmInfo.statusReg;
 
 	// LoRa
@@ -210,14 +242,26 @@ void UART_Reply_Status(S_UART_MESSAGE *msg, S_UART_MESSAGE *reply)
 	reply->op_stt_rply.errors.bits.no_UWB = dwmInfo.no_uwb;
 	reply->op_stt_rply.errors.bits.no_IMU = bmi.no_IMU;
 	reply->op_stt_rply.fault_counter = fault_counter;
+	reply->op_stt_rply.link_features = link_cfg.features;
+	reply->op_stt_rply.link_flags = (link_st.ext ? LINK_STATE_EXT : 0)
+			| (link_cfg.lora_owner ? LINK_STATE_OWNER : 0)
+			| (link_st.lora_phase != LINK_LP_IDLE ? LINK_STATE_PENDING : 0)
+			| (link_st.reverting ? LINK_STATE_REVERT : 0)
+			| (Link_Coexisting() ? LINK_STATE_COEXIST : 0);
+	reply->op_stt_rply.profile_req = 0;
+	reply->op_stt_rply.profile_echo = link_st.ext ? link_st.echo_profile : 0xFF;
+	reply->op_stt_rply.req_lora_tx_dbm = (link_st.ext && link_cfg.lora_owner) ? link_st.lora_req : LINK_LORA_UNKNOWN;
+	reply->op_stt_rply.req_uwb_tx_level = link_st.uwb_level;
+	reply->op_stt_rply.tag_lora_tx_dbm = link_st.echo_lora_dbm;
+	reply->op_stt_rply.tag_uwb_tx_level = link_st.echo_uwb_level;
+	reply->op_stt_rply.lde_preset = link_st.lde_nlos;
+	reply->op_stt_rply.k_used = link_st.k_used;
 	{	// any anchor with a battery gauge on I2C2, not only cable id 3; 0 = no gauge, as before
 		uint8_t soc = RRC2040_Soc(&hi2c2);
 		reply->op_stt_rply.battery = (soc == RRC2040_NO_GAUGE) ? 0 : soc;
 	}
 
-	reply->op_stt_rply.checksum = checksum((uint8_t*) reply, reply->header.length);
-
-	UART_SendMessage(reply, reply->header.length);
+	UART_SendSized(reply, reply->header.length, LEGACY_LEN(S_UART_STATUS_REPLY, link_features));
 
 
 
@@ -251,8 +295,12 @@ void UART_Reply_Status_UWB_Diag(S_UART_MESSAGE *msg, S_UART_MESSAGE *reply)
 	reply->op_sttd_rply.HPW   = dwmInfo.counter.HPW   ;
 	reply->op_sttd_rply.TXW   = dwmInfo.counter.TXW   ;
 
-	reply->op_sttd_rply.checksum = checksum((uint8_t*) reply, reply->header.length);
-	UART_SendMessage(reply, reply->header.length);
+	// latched with the diagnostics on the same exchange
+	reply->op_sttd_rply.lde_ppindx       = dwmInfo.lde_ppindx;
+	reply->op_sttd_rply.rxpacc_nosat     = dwmInfo.rxpacc_nosat;
+	reply->op_sttd_rply.exchange_tick_ms = dwmInfo.exchange_tick_ms;
+
+	UART_SendSized(reply, reply->header.length, LEGACY_LEN(S_UART_STATUS_UWB_DIAG_REPLY, lde_ppindx));
 }
 
 void UART_Reply_error(S_UART_MESSAGE *msg, S_UART_MESSAGE *reply){

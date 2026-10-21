@@ -300,7 +300,7 @@ void port_set_dw1000_slowrate(void)
  * */
 void port_set_dw1000_fastrate(void)
 {
-    hspi3.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;//16; //20MHz should be 8 because our base rate is 160MHz
+    hspi3.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;//16; // PCLK3 156 MHz / 8 = 19.5 MHz (DW1000 max 20 MHz)
     HAL_SPI_Init(&hspi3);
 }
 

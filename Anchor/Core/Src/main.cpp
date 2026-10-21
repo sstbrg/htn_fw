@@ -171,6 +171,71 @@ static void Antenna_Delay_Command(S_UART_MESSAGE *msg, S_UART_MESSAGE *reply) {
 	UART_SendMessage(r, sizeof(r));
 }
 
+// UART_OPCODE_READ_CIR_WINDOW: the CIR window latched with the last valid range (same exchange as
+// DIAGNOSTIC_STATUS). Reply {fp_index u16 (Q10.6), start u16, n u8, n x (i16 re, i16 im)}; n = 0 before
+// the first range.
+static void Cir_Window_Command(S_UART_MESSAGE *msg) {
+	static uint8_t r[7 + 4 * CIR_WINDOW_N + 1];
+	uint8_t n = dwmInfo.cir_n;
+	uint8_t len = 7 + 4 * n + 1;
+	r[0] = msg->header.opcode;
+	r[1] = len;
+	memcpy(&r[2], &dwmInfo.cir_fp_index, 2);
+	memcpy(&r[4], &dwmInfo.cir_start, 2);
+	r[6] = n;
+	memcpy(&r[7], &dwmInfo.cir_buf[1], 4 * n);	// skip the accumulator's dummy octet
+	r[len - 1] = checksum(r, len);
+	UART_SendMessage(r, len);
+}
+
+// UART_OPCODE_SET_LINK_FEATURES (doc 9I): LinkCfg_t bytes {features, k_max, lora_target_dbm,
+// lora_band_db, uwb_target_dbm, uwb_band_db, profile_max, profile_override, step_interval_ds,
+// lora_owner}; a shorter payload sets the leading fields, empty = read. Reply: the configuration.
+static void Link_Features_Command(S_UART_MESSAGE *msg) {
+	static uint8_t r[2 + sizeof(LinkCfg_t) + 1];
+	if (msg->header.length > sizeof(S_HEADER) + 1)
+		Link_SetConfig(msg->buff, msg->header.length - sizeof(S_HEADER) - 1);
+	r[0] = msg->header.opcode;
+	r[1] = sizeof(r);
+	memcpy(&r[2], &link_cfg, sizeof(LinkCfg_t));
+	r[sizeof(r) - 1] = checksum(r, sizeof(r));
+	UART_SendMessage(r, sizeof(r));
+}
+
+// UART_OPCODE_XTAL_TRIM: {trim u8} 0..31 saves and applies it, 0xFF clears it (back to the chip's OTP
+// trim, or mid-range), empty = read. Self-id page slot 3. Reply {status, saved (0xFF = none), active}.
+static void Xtal_Trim_Command(S_UART_MESSAGE *msg) {
+	static uint8_t r[6];
+	uint8_t status = 0;
+	if (msg->header.length >= sizeof(S_HEADER) + 1 + 1) {
+		uint8_t t = msg->buff[0];
+		if (t <= FS_XTALT_MASK || t == 0xFF) {
+			uint16_t page[8];
+			memcpy(page, (const void*)FLASH_SELF_ID_ADDRESS, sizeof(page));
+			page[3] = (t == 0xFF) ? 0xFFFF : t;
+			if (Flash_Erase(FLASH_SELF_ID_USER_BANK, FLASH_SELF_ID_PAGE) != HAL_OK
+					|| Flash_Write(FLASH_SELF_ID_ADDRESS, (uint64_t*)page, 1) != HAL_OK)
+				status = 1;
+			if (t == 0xFF) {	// back to what the driver loads at init
+				dwmInit();
+				dwConfig(&config);
+			} else {
+				dwt_setxtaltrim(t);
+			}
+		} else {
+			status = 2;		// out of range
+		}
+	}
+	uint16_t saved = ((const uint16_t*)FLASH_SELF_ID_ADDRESS)[3];
+	r[0] = msg->header.opcode;
+	r[1] = sizeof(r);
+	r[2] = status;
+	r[3] = (saved <= FS_XTALT_MASK) ? (uint8_t)saved : 0xFF;
+	r[4] = dwt_read8bitoffsetreg(FS_CTRL_ID, FS_XTALT_OFFSET) & FS_XTALT_MASK;
+	r[5] = checksum(r, sizeof(r));
+	UART_SendMessage(r, sizeof(r));
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -266,6 +331,9 @@ int main(void)
 	while (1) {
 		refresh_WD();
 		fota_poll();
+		(void)Backoff_Left();	// clears an expired deadline every pass (wrap safety)
+		if (!fota_busy())
+			dwRecover();
 
 		uint8_t RxLen = UART_GetMessage((uint8_t*) &msg, sizeof(msg));
 		if ((RxLen != RX_EMPTY) && Validate_UART(&msg, RxLen)) {
@@ -286,9 +354,11 @@ int main(void)
 
 				uint8_t only_lora = (msg.op_twr_req.tag_id & 0x8000? 1:0);
 
-				if ((dwmInfo.backoff_timer < _1ms_tick) && (!dwmInfo.no_uwb) && !only_lora) {
+				// optional third payload byte: k_max for this round (9F), 0 = anchor decides
+				uint8_t k_req = (msg.header.length >= sizeof(S_HEADER) + 3 + 1) ? msg.buff[2] : 0;
+				if ((Backoff_Left() == 0) && (!dwmInfo.no_uwb) && !only_lora) {
 					dwmInfo.backoff_timer = 0;
-					dwRange();
+					dwRangeRound(k_req);
 				}
 				if (!lora_rxInfo.no_lora && (lora_rxInfo.freq != RF_FREQ_TAG(lora_rxInfo.tag_id))) {
 					Update_Lora_Config_Anchor(&lora_rxInfo, &dwmInfo);
@@ -300,7 +370,7 @@ int main(void)
 			case UART_OPCODE_SET_ID: //PC id
 				{
 					const uint16_t *page = (const uint16_t*)FLASH_SELF_ID_ADDRESS;	// keep the antenna delays
-					uint16_t new_id[8] = {msg.set_id_req.new_id,page[1],page[2],0xFFFF,0xFFFF,0xFFFF,0xFFFF,reset_counter};
+					uint16_t new_id[8] = {msg.set_id_req.new_id,page[1],page[2],page[3],0xFFFF,0xFFFF,0xFFFF,reset_counter};	// keep delays and crystal trim
 					uint8_t error;
 					error = Flash_Erase(FLASH_SELF_ID_USER_BANK, FLASH_SELF_ID_PAGE) != HAL_OK;
 					if (error){
@@ -325,10 +395,11 @@ int main(void)
 					else if (msg.op_backoff_ctrl_req.BackOFF_CTRL == 1){
 						BackOFF_CTRL = true;
 					}
-					// optional window: {ctrl, top_ms, min_ms}; backoff = random() % top + min
+					// optional window: {ctrl, top, min}; backoff = random() % top + min. The bytes are in the old
+					// 2.05 ms ticks (anc3.1.5), so the host's settings keep their real timing on the 1 ms tick.
 					if (msg.header.length >= sizeof(S_HEADER) + 3 + 1 && msg.buff[1] != 0) {
-						backoff_top_ms = msg.buff[1];
-						backoff_min_ms = msg.buff[2];
+						backoff_top_ms = OLD_TICKS_TO_MS(msg.buff[1]);
+						backoff_min_ms = OLD_TICKS_TO_MS(msg.buff[2]);
 					}
 
 					UART_Reply_BackOFF_CTRL(&msg, &reply);
@@ -362,7 +433,7 @@ int main(void)
 				radioFlags.wakeup_seq = true;
 				dwmInfo.tag_dest = lora_rxInfo.tag_id = msg.op_twr_req.tag_id & 0x7FFF;
 
-			  	if ((dwmInfo.backoff_timer < _1ms_tick) && (!dwmInfo.no_uwb)) {
+			  	if ((Backoff_Left() == 0) && (!dwmInfo.no_uwb)) {
 			  		dwmInfo.backoff_timer = 0;
 			  		dwRange();
 			  	}
@@ -402,6 +473,18 @@ int main(void)
   			}
   			case UART_OPCODE_ANT_DELAY: {
   				Antenna_Delay_Command(&msg, &reply);
+  				break;
+  			}
+  			case UART_OPCODE_XTAL_TRIM: {
+  				Xtal_Trim_Command(&msg);
+  				break;
+  			}
+  			case UART_OPCODE_READ_CIR_WINDOW: {
+  				Cir_Window_Command(&msg);
+  				break;
+  			}
+  			case UART_OPCODE_SET_LINK_FEATURES: {
+  				Link_Features_Command(&msg);
   				break;
   			}
   			case UART_OPCODE_LOOPBACK: {
@@ -570,7 +653,7 @@ void SystemClock_Config(void)
 static void MX_NVIC_Init(void)
 {
   /* EXTI4_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(EXTI4_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(EXTI4_IRQn, 1, 0);	// below TIM4: the watchdog preempts a radio handler stuck on BUSY
   HAL_NVIC_EnableIRQ(EXTI4_IRQn);
   /* TIM4_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(TIM4_IRQn, 0, 0);
@@ -600,6 +683,7 @@ void main_init() {
 	dwmInfo.dw_ready = DW_NO_VALID_DATA;
 	dwmInfo.tag_dest = 33;
 	dwmInfo.distance = 0;
+	Link_Init();	// after srandom(): the first sequence number is random
 
 	#ifdef DEBUG_RESET_COUNTER_IN_FLASH
 		reset_counter = Flash_Read_ResetCounter();
@@ -700,8 +784,7 @@ void Error_Handler(void)
   /* USER CODE BEGIN Error_Handler_Debug */
 	/* User can add his own implementation to report the HAL error return state */
 	__disable_irq();
-	while (1) {
-	}
+	HAL_NVIC_SystemReset();	// a hang with interrupts off would bypass the TIM4 watchdog
   /* USER CODE END Error_Handler_Debug */
 }
 

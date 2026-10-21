@@ -10,6 +10,7 @@
 static uint64 poll_rx_ts;
 static uint64 resp_tx_ts;
 static uint32 status_reg = 0;
+static uint8_t uwb_tx_level = 0;	// level in TX_POWER now; anything but a ranging response goes at 0
 
 extern uint32_t _1ms_tick; //timer TIM4 1ms
 extern uint8_t HW_Version;
@@ -22,6 +23,7 @@ static void resp_msg_set_ts(uint8 *ts_field, const uint64 ts);
 
 //static uint8 tx_resp_msg[] = {TAG_FLAG, 0x88, 0, 0xCA, 0xDE, (uint8_t)(SELF_ID&0xFF),(uint8_t)(SELF_ID>>8), 'P', 'A', 0xE1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 twr_tag_msg_t tx_resp_msg;
+twr_tag_ext_msg_t tx_resp_ext;
 
 uint8_t dummy_buff[1024] = {0};
 
@@ -82,6 +84,9 @@ dwt_config_t config = {
 		(1024 + 1 + 16) // SFD timeout (preamble length + 1 + SFD length - PAC size). Used in RX only.
 		};
  */
+static bool dw_init_ok = false;	// dwt_initialise() succeeded and dwConfig() ran since
+static uint32_t dw_retry_tick = 0;
+
 void dwmStatus() {
 	uint32 ID = dwt_readdevid();
 	// Read and validate device ID, return -1 if not recognised
@@ -89,6 +94,24 @@ void dwmStatus() {
 	{
 		dwmInfo.no_uwb = true;
 	}
+	else
+	{
+		dwmInfo.no_uwb = !dw_init_ok;	// one bad read no longer disables UWB until reset
+	}
+}
+
+// Main loop: with no_uwb set, check again every 5 s - a valid id on an initialised chip clears it,
+// anything else gets a full re-initialisation.
+void dwRecover(void) {
+	if (!dwmInfo.no_uwb || HAL_GetTick() - dw_retry_tick < 5000)
+		return;
+	dw_retry_tick = HAL_GetTick();
+	if (dw_init_ok && dwt_readdevid() == DWT_DEVICE_ID) {
+		dwmInfo.no_uwb = false;
+		return;
+	}
+	if (dwmInit())
+		dwConfig(&config);
 }
 
 int dwmInit() {
@@ -98,12 +121,15 @@ int dwmInit() {
 	print("tag number %u\n\r", TAG_ID);
 	reset_DW1000(); /* Target specific drive of RSTn line into DW1000 low for a period. */
 	port_set_dw1000_slowrate();
+	dw_init_ok = false;
 	if (dwt_initialise(DWT_LOADUCODE) == DWT_ERROR) {
 		print("Tag  DW1000 Init Failed\r\n");
 		dwmInfo.no_uwb = true;
 		return FALSE;
 	}
 	dwmInfo.no_uwb = false;
+	dw_init_ok = true;
+	dwApplyXtalTrim();
 	print("Tag  DW1000 Init DW1000 Succeed\r\n");
 	return TRUE;
 
@@ -177,6 +203,50 @@ void dwConfig(dwt_config_t *config) {
 	dwt_setfinegraintxseq(0);
 
 	dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_TXFRS); // to clear flag
+	uwb_tx_level = 0;
+}
+
+// TX_POWER register for a level: level 0 = the maximum dwConfig() sets, each level 3 dB lower.
+// Gain per byte = coarse (bits 7..5: 0 = 15 dB .. 6 = 0 dB, 2.5 dB steps) + fine (bits 4..0, 0.5 dB).
+static uint32_t dwTxPowerForLevel(uint8_t level) {
+	uint8_t base = (HW_Version == 2) ? (MAX_POWER & 0xFF) : 0x40;
+	int gain = (6 - (base >> 5)) * 5 + (base & 0x1F);	// half-dB
+	gain -= 6 * level;
+	if (gain < 0)
+		gain = 0;
+	int coarse = gain / 5;
+	if (coarse > 6)
+		coarse = 6;
+	int fine = gain - coarse * 5;
+	if (fine > 31)
+		fine = 31;
+	uint32_t b = ((uint32_t)(6 - coarse) << 5) | (uint32_t)fine;
+	return b | (b << 8) | (b << 16) | (b << 24);
+}
+
+// Quietest level this board can do: levels below 0 dB gain all read the same.
+static uint8_t dwTxLevelFloor(void) {
+	uint8_t base = (HW_Version == 2) ? (MAX_POWER & 0xFF) : 0x40;
+	int gain = (6 - (base >> 5)) * 5 + (base & 0x1F);
+	int floor = gain / 6;
+	return (floor > LINK_UWB_LEVELS - 1) ? LINK_UWB_LEVELS - 1 : floor;
+}
+
+static void dwSetTxLevel(uint8_t level) {
+	if (level > dwTxLevelFloor())
+		level = dwTxLevelFloor();
+	if (level != uwb_tx_level) {
+		dwt_write32bitreg(TX_POWER_ID, dwTxPowerForLevel(level));
+		uwb_tx_level = level;
+	}
+}
+
+// Crystal trim: self-id flash page slot 3, 0..31; 0xFFFF = keep what dwt_initialise() loaded
+// (the chip's OTP trim, or mid-range 0x10 when the OTP has none).
+void dwApplyXtalTrim(void) {
+	uint16_t t = ((const uint16_t*)FLASH_SELF_ID_ADDRESS)[3];
+	if (t <= FS_XTALT_MASK)
+		dwt_setxtaltrim((uint8_t)t);
 }
 
 // Antenna delays: self-id flash page slots 1 (TX) and 2 (RX); 0 or 0xFFFF = not calibrated
@@ -196,6 +266,26 @@ void dwApplyAntennaDelays(void) {
 	#define DBG_ON
 	#define DBG_OFF
 #endif // TIMING_TESTS_USING_LED_GPIO
+
+/* 9K: polls from two stations (PC ids) in the last LINK_MULTI_MS mean no adaptation. */
+static uint16_t seen_pc[2] = {0xFFFF, 0xFFFF};
+static uint32_t seen_tick[2] = {0, 0};
+
+static bool dwNotePoll(uint16_t src) {
+	uint16_t pc = src >> 2;
+	uint32_t now = HAL_GetTick();
+	int i;
+	if (seen_pc[0] == pc)
+		i = 0;
+	else if (seen_pc[1] == pc)
+		i = 1;
+	else
+		i = (seen_tick[0] <= seen_tick[1]) ? 0 : 1;	// replace the older one
+	seen_pc[i] = pc;
+	seen_tick[i] = now;
+	int j = 1 - i;
+	return seen_pc[j] != 0xFFFF && now - seen_tick[j] < LINK_MULTI_MS;
+}
 
 int dwRange(void) {
 	/* Activate reception immediately. */
@@ -243,7 +333,7 @@ int dwRange(void) {
 	if (status_reg & SYS_STATUS_RXFCG) {
 
 		uint32 frame_len;
-		twr_anchor_msg_t rx_buffer;
+		twr_anchor_ext_msg_t rx_buffer;	// legacy poll, or extended poll (see LINK_HELLO in dw1000.h)
 
 		DBG_ON
 		/* Clear good RX frame event in the DW1000 status register. */
@@ -257,7 +347,7 @@ int dwRange(void) {
 			fota_uwb_rx(frame_len);
 			return 0;
 		}
-		if (frame_len == sizeof(rx_buffer)) {
+		if (frame_len == sizeof(twr_anchor_msg_t) || frame_len == sizeof(twr_anchor_ext_msg_t)) {
 			dwt_readrxdata((uint8_t *)&rx_buffer, frame_len, 0);
 		}
 		else {
@@ -268,6 +358,8 @@ int dwRange(void) {
 		/* Check that the frame is a poll sent by "SS TWR initiator" example.
 		 * As the sequence number field of the frame is not relevant, it is cleared to simplify the validation of the frame. */
 		if (rx_buffer.des == SELF_ID) {
+			bool ext = (frame_len == sizeof(twr_anchor_ext_msg_t)) && (rx_buffer.i9 == LINK_EXT_MARK);
+			bool multi = dwNotePoll(rx_buffer.src);
 			tx_resp_msg.des = rx_buffer.src;
 			lora_rxInfo.wakeup_detected = true; //enable Lora while recieve uwb
 			uint32 resp_tx_time;
@@ -291,10 +383,35 @@ int dwRange(void) {
 			resp_msg_set_ts((uint8_t*)&tx_resp_msg.poll_rx_ts_id, poll_rx_ts);
 			resp_msg_set_ts((uint8_t*)&tx_resp_msg.resp_tx_ts_id, resp_tx_ts);
 
-			/* Write and send the response message. See NOTE 9 below. */
-			//tx_resp_msg[ALL_MSG_SN_IDX] = frame_seq_nb;
-			dwt_writetxdata(sizeof(tx_resp_msg), (uint8_t*)&tx_resp_msg, 0); /* Zero offset in TX buffer. */
-			dwt_writetxfctrl(sizeof(tx_resp_msg), 0, 1); /* Zero offset in TX buffer, ranging. */
+			/* Link adaptation (doc section 9). A legacy poll means maximum, always; an extended
+			 * poll carries this response's UWB level and the owner anchor's LoRa request. */
+			if (ext) {
+				uint8_t flags = lora_rxInfo.no_lora ? LINK_RESP_NO_LORA : 0;
+				dwSetTxLevel(multi ? 0 : rx_buffer.req_uwb_level);
+				uint8_t ack = Lora_LinkRequest(rx_buffer.src, rx_buffer.seq, rx_buffer.req_lora_dbm,
+						rx_buffer.confirm_seq, multi);
+				if (Lora_LinkPending())
+					flags |= LINK_RESP_PENDING;
+				if (multi)
+					flags |= LINK_RESP_MULTI;
+				memcpy((uint8_t*)&tx_resp_ext, (const uint8_t*)&tx_resp_msg, sizeof(twr_tag_msg_t) - 2);
+				tx_resp_ext.tag_no_lora = flags;
+				tx_resp_ext.ack_seq = ack;
+				tx_resp_ext.lora_dbm = lora_rxInfo.no_lora ? LINK_LORA_KEEP : Lora_LinkPower();
+				tx_resp_ext.uwb_level = uwb_tx_level;
+				tx_resp_ext.profile_used = 0;
+				dwt_writetxdata(sizeof(tx_resp_ext), (uint8_t*)&tx_resp_ext, 0);
+				dwt_writetxfctrl(sizeof(tx_resp_ext), 0, 1);
+			} else {
+				dwSetTxLevel(0);
+				Lora_LinkMax();
+				tx_resp_msg.tag_no_lora = lora_rxInfo.no_lora;
+				if (rx_buffer.i9 == LINK_HELLO)	// a new anchor asks: say we can do extended frames
+					tx_resp_msg.tag_no_lora |= LINK_CAPABLE | (multi ? LINK_CAPABLE_MULTI : 0);
+				/* Write and send the response message. See NOTE 9 below. */
+				dwt_writetxdata(sizeof(tx_resp_msg), (uint8_t*)&tx_resp_msg, 0); /* Zero offset in TX buffer. */
+				dwt_writetxfctrl(sizeof(tx_resp_msg), 0, 1); /* Zero offset in TX buffer, ranging. */
+			}
 
 			dwt_write8bitoffsetreg(PMSC_ID, PMSC_CTRL0_OFFSET, dwt_read8bitoffsetreg(PMSC_ID, PMSC_CTRL0_OFFSET) | 0x20); // force Tx clock on first (PMSC_CTRL0 bits 5,4 = 1,0)
 			ret = dwt_starttx(DWT_START_TX_DELAYED);
@@ -309,6 +426,7 @@ int dwRange(void) {
 				/* Increment frame sequence number after transmission of the poll message (modulo 256). */
 				PWR_SetTimeOut(PWR_Duration_MyMessage);
 			}
+			dwSetTxLevel(0);	// FOTA and everything else stays at full power
 		}
 		DBG_OFF
 	} else {

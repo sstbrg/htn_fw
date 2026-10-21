@@ -139,9 +139,15 @@ extern "C" {
  * tag3.1.2	[added] FOTA LEDs: target blinks from the handshake, loader link LED while loading
  * tag3.1.3	[fixed] a tag stays awake while it counts down as FOTA target
  * tag3.1.5	[added] backoff arm-once, release on opcode 19=0, runtime window {top,min}; status backoff in ms left; per-anchor random seed; imposter id mask; SET_ID refreshes UWB ids; UART error callback re-arms RX; antenna delays from flash (opcode 20); LDE_CFG1 survives dwConfig; status-bit clearing and frame-length checks
+ * tag3.2.0	[added] doc section 9: answers a hello and the extended poll (legacy polls unchanged, so any
+ *				anchor version keeps ranging); UWB level per response, LoRa power by request/ack/confirm,
+ *				back to maximum on a legacy poll, two stations, or 1 s without the owner anchor.
+ *				[fixed] bug list 2026-10-22: TIM4 true 1 ms tick (watchdog kept at 2.05 s); Error_Handler
+ *				resets; LoRa DIO1 below TIM4; lost LoRa TX interrupt recovery; no_uwb not latched, bounded
+ *				DW1000 re-init; wrap-safe LoRa wake wait.
  */
 
-#define VERSION "tag3.1.5"
+#define VERSION "tag3.2.0"
 
 #define IS_TAG true
 

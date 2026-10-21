@@ -65,11 +65,27 @@ void Lora_init(LoraRxInfo_t* pLoraRxInfo, DwmInfo_t * inDwmInfoPtr)
 	}
 
 void Lora_Status(){
-	__disable_irq();
+	// keep the DIO1 handler off SPI2 meanwhile; masking only it (not all interrupts) leaves the
+	// TIM4 watchdog running if the radio's BUSY line never drops
+	HAL_NVIC_DisableIRQ(SX_DIO1_EXTI_IRQn);
 	uint8_t chip_mode = Radio.GetStatus().Value;
 	lora_rxInfo.no_lora = !((chip_mode != 0) && (chip_mode != 0xFF));
 //	lora_rxInfo.no_lora = (Radio.ReadReg(RADIO_GET_STATUS) != 1? true:false);	//alive or not, 1 = alive, else = dead
-	__enable_irq();
+	HAL_NVIC_EnableIRQ(SX_DIO1_EXTI_IRQn);
+}
+
+/* A TX or RX whose completion interrupt never comes would block the LoRa side for good while
+ * the main loop keeps the watchdog fed. Both have radio timeouts of ~0.78 s (50000 x 15.625 us),
+ * so no event for LORA_RECOVER_MS means the event was lost: reset and reconfigure the radio. */
+#define LORA_RECOVER_MS 3000
+static uint32_t lora_tx_tick = 0;
+static uint32_t lora_rx_tick = 0;
+
+static void Lora_Recover(void) {
+	Radio.Init();
+	ConfigureGeneralRadio(&Radio, &radioConfiguration);
+	Radio.ClearIrqStatus(0xFFFF);
+	Lora_Status();
 }
 
 RadioStatus_t status;
@@ -79,6 +95,7 @@ void Lora_Operation_RX(){
 	sLoRaMsg* p_lora_msg;
 	lora_rxInfo.rssi = 0;
 	lora_rxInfo.snr = 0;
+	lora_rxInfo.signal_rssi = 0;
 
 
 	if(radioFlags.rxDone == true){
@@ -97,6 +114,7 @@ void Lora_Operation_RX(){
 
 				lora_rxInfo.RxCounter++;
 				GetRssiSnr(&lora_rxInfo.rssi, &lora_rxInfo.snr);
+				Link_OnLoraPacket(lora_rxInfo.signal_rssi, lora_rxInfo.snr);
 
 				HAL_GPIO_TogglePin(SX_LED_RX_GPIO_Port, SX_LED_RX_Pin);
 			}
@@ -106,9 +124,11 @@ void Lora_Operation_RX(){
 	if(radioFlags.rxTimeout == true){
 		radioFlags.rxTimeout = false;
 	}
+	radioFlags.rxError = false;	// consumed: one restart per error, not one per main-loop pass
 
 	ConfigureRadioRx(&Radio, &radioConfiguration);
 	Radio.ClearIrqStatus(0xFFFF);
+	lora_rx_tick = HAL_GetTick();
 	Radio.SetRx(radioConfiguration.rxTimeout);
 	status = Radio.GetStatus();
 }
@@ -128,6 +148,7 @@ void Lora_Operation_TX( void )
 
 	PrepareBuffer(&Radio, &MessageToSend);
 	ConfigureRadioTx(&Radio, &radioConfiguration);
+	lora_tx_tick = HAL_GetTick();
 	Radio.SetTx(radioConfiguration.txTimeout);
 	HAL_GPIO_TogglePin(SX_LED_TX_GPIO_Port, SX_LED_TX_Pin); // Turn LED On
 }
@@ -160,6 +181,7 @@ void TAG_Lora_Operation_TX(status_bits errors) {
 
 	TAG_PrepareBuffer(&Radio, &messageToSend);
 	ConfigureRadioTx(&Radio, &radioConfiguration);
+	lora_tx_tick = HAL_GetTick();
 	Radio.SetTx(radioConfiguration.txTimeout);
 
 	HAL_GPIO_TogglePin(SX_LED_TX_GPIO_Port, SX_LED_TX_Pin); // Turn LED On
@@ -275,14 +297,25 @@ void GetRssiSnr(int8_t *rssi, int8_t *snr)
     Radio.GetPacketStatus(&pkt_stat);
     *rssi = pkt_stat.Params.LoRa.RssiPkt;
     *snr = pkt_stat.Params.LoRa.SnrPkt;
+    lora_rxInfo.signal_rssi = pkt_stat.Params.LoRa.SignalRssiPkt;	// same GetPacketStatus() call
 
 }
 
 int Lora_TXIdle(void) {
+	if (!radioFlags.txDone && !radioFlags.txTimeout && radioFlags.RxOrTx == Tx
+			&& HAL_GetTick() - lora_tx_tick > LORA_RECOVER_MS) {
+		Lora_Recover();
+		radioFlags.txTimeout = true;
+	}
 	return ((radioFlags.txDone || radioFlags.txTimeout) && !lora_rxInfo.no_lora);
 }
 
 int Lora_RXIdle(void) {
+	if (!radioFlags.rxDone && !radioFlags.rxTimeout && !radioFlags.rxError && radioFlags.RxOrTx == Rx
+			&& !lora_rxInfo.no_lora && HAL_GetTick() - lora_rx_tick > LORA_RECOVER_MS) {
+		Lora_Recover();
+		radioFlags.rxTimeout = true;	// the main loop re-arms RX
+	}
 	return ((radioFlags.rxDone || radioFlags.rxTimeout || radioFlags.rxError) && !lora_rxInfo.no_lora);
 }
 

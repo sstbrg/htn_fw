@@ -44,6 +44,26 @@ extern "C" {
 #define TAG_FLAG 0x41
 #define ANCHOR_FLAG 0xE0
 
+/* UWB frames (doc section 9, rule zero). The legacy frames are what every firmware speaks: a tag
+ * drops any poll that is not a legacy or extended poll by length, an older tag any poll that is not
+ * exactly 12 bytes, and an older anchor any response over 20 bytes. So extended frames are used
+ * only after both ends have shown they are new:
+ *   1. a new anchor with link adaptation on sends legacy polls with i9 = LINK_HELLO (older anchors
+ *      send 0xE0; a legacy poll always means "tag at maximum");
+ *   2. a new tag answers a hello with a legacy response whose byte 9 has LINK_CAPABLE set;
+ *   3. only then does the anchor send extended polls, and the tag answers an extended poll (and only
+ *      that) with an extended response. Two unanswered extended polls, or a legacy answer, put the
+ *      anchor back on legacy frames for LINK_EXT_HOLD_MS. */
+#define LINK_HELLO          0x4C    // legacy poll byte 9: "I can do extended frames"
+#define LINK_EXT_MARK       0x4D    // extended poll byte 9
+#define LINK_CAPABLE        0x80    // legacy response byte 9 (bit0 stays the no-LoRa flag)
+#define LINK_CAPABLE_MULTI  0x40    //   with LINK_CAPABLE: polls from two stations in the last 2 s (9K)
+#define LINK_RESP_NO_LORA   0x01    // extended response byte 9 flags
+#define LINK_RESP_PENDING   0x02    //   a quieter LoRa request waits for its confirm
+#define LINK_RESP_MULTI     0x04    //   polls from two stations in the last 2 s: no adaptation (9K)
+#define LINK_MULTI_MS       2000    // a second station counts this long after its last poll
+#define LINK_LORA_KEEP      0x7F    // extended poll: no LoRa request; response: tag has no LoRa
+
 #pragma pack(push, 1)
 typedef struct {
 		uint8_t t_a_flag = ANCHOR_FLAG;
@@ -53,13 +73,29 @@ typedef struct {
 		uint8_t i4 = 0xDE;
 		uint16_t src = 0;
 		uint16_t des = 0;
-		uint8_t i9 = 0xE0;
+		uint8_t i9 = 0xE0;	// 0xE0, LINK_HELLO or LINK_EXT_MARK
 		uint8_t i10 = 0;
 		uint8_t i11 = 0;
 } twr_anchor_msg_t;
-#pragma pack (pop)
 
-#pragma pack(push, 1)
+typedef struct {			// extended poll: legacy bytes 0-9, then the request (9J handshake)
+		uint8_t t_a_flag = ANCHOR_FLAG;
+		uint8_t i1 = 0x88;
+		uint8_t msd_index = 0;
+		uint8_t i3 = 0xCA;
+		uint8_t i4 = 0xDE;
+		uint16_t src = 0;
+		uint16_t des = 0;
+		uint8_t i9 = LINK_EXT_MARK;
+		uint8_t seq = 0;			// LoRa request sequence number (repeated = keep-alive)
+		int8_t req_lora_dbm = LINK_LORA_KEEP;	// requested LoRa power, LINK_LORA_KEEP = no request
+		uint8_t req_uwb_level = 0;	// UWB level for the response to this poll (0 = maximum)
+		uint8_t confirm_seq = 0;	// confirms the acknowledged request, 0 = none
+		uint8_t profile_req = 0;	// 9H, always profile 0 for now
+		uint8_t crc0 = 0;
+		uint8_t crc1 = 0;
+} twr_anchor_ext_msg_t;
+
 typedef struct {
 		uint8_t t_a_flag = TAG_FLAG;
 		uint8_t i1 = 0x88;
@@ -68,13 +104,37 @@ typedef struct {
 		uint8_t i4 = 0xDE;
 		uint16_t src = 0;
 		uint16_t des = 0;
-		uint8_t tag_no_lora = 0xE1;
+		uint8_t tag_no_lora = 0xE1;	// legacy: bit0 no LoRa (+ LINK_CAPABLE); extended: LINK_RESP_* flags
 		uint32_t poll_rx_ts_id = 0;
 		uint32_t resp_tx_ts_id = 0;
 		uint8_t i18 = 0;
 		uint8_t i19 = 0;
 } twr_tag_msg_t;
+
+typedef struct {			// extended response: legacy bytes 0-17, then the tag's state
+		uint8_t t_a_flag = TAG_FLAG;
+		uint8_t i1 = 0x88;
+		uint8_t msd_index = 0;
+		uint8_t i3 = 0xCA;
+		uint8_t i4 = 0xDE;
+		uint16_t src = 0;
+		uint16_t des = 0;
+		uint8_t tag_no_lora = 0;	// LINK_RESP_* flags
+		uint32_t poll_rx_ts_id = 0;
+		uint32_t resp_tx_ts_id = 0;
+		uint8_t ack_seq = 0;		// request the tag will apply on confirm (or applied, when louder)
+		int8_t lora_dbm = 0;		// LoRa power in use, LINK_LORA_KEEP = no LoRa
+		uint8_t uwb_level = 0;		// UWB level of this response
+		uint8_t profile_used = 0;	// 9H, always 0 for now
+		uint8_t crc0 = 0;
+		uint8_t crc1 = 0;
+} twr_tag_ext_msg_t;
 #pragma pack (pop)
+
+// The legacy sizes are what older firmware checks: they must never change.
+static_assert(sizeof(twr_anchor_msg_t) == 12, "legacy poll is 12 bytes");
+static_assert(sizeof(twr_tag_msg_t) == 20, "legacy response is 20 bytes");
+static_assert(sizeof(twr_anchor_ext_msg_t) == 17 && sizeof(twr_tag_ext_msg_t) == 24, "extended frames");
 
 /* Example application name and version to display on LCD screen. */
 #define APP_NAME "SS TWR INIT v1.4"
@@ -89,9 +149,11 @@ typedef struct {
 #define PRF_64Mhz 121.74
 
 ///// Timers
-#define THRESHOLD_MS 		(70)  // deRange rx timeout
-#define TIME_TOP_RANGE_MS	200 // max time is 200ms, now set to 1000 because slot Hterm
-#define MIN_BACKOFF_MS		10
+// _1ms_tick is a true 1 ms since anc3.2.0 (it was 2.05 ms): the values keep the old real timings.
+#define THRESHOLD_MS 		(144)  // dwRange rx timeout (70 old ticks)
+#define TIME_TOP_RANGE_MS	410	// backoff = random() % top + min: 21..430 ms, as 200 / 10 old ticks
+#define MIN_BACKOFF_MS		21
+#define OLD_TICKS_TO_MS(t)	((uint16_t)(((uint32_t)(t) * 2051u + 500u) / 1000u))	// opcode 19 window units
 
 extern uint32_t _1ms_tick;
 
@@ -267,11 +329,22 @@ extern uint8_t lde_cfg1;			// LDE_CFG1 (NTM/PMULT), re-applied by dwConfig()
 int	dwmInit( void );				// 	Init DW
 void dwSetFrameIds(void);			//	frame ids from dwmInfo.mine_pc_id/anchor_id (boot and SET_ID)
 void dwApplyAntennaDelays(void);	//	per-device antenna delays from flash, or the defaults
+void dwApplyXtalTrim(void);			//	per-device DW1000 crystal trim from flash, or the OTP/default
 void dwmStatus( void );				//	initialization status
+void dwRecover( void );				//	main loop: bounded re-initialisation while no_uwb
 void dwt_configenable_user_accumem_read(bool bit_set);
 void dwmDiagStatus( void );			//	Diagnostic status
 void dwReadExtended_regs( void );	// 	more register for debug: RF_INFO, RF_FQUAL, RF_TTCKI_ID, RF_TTCKO_ID, SYS_STATE_ID, ACC_MEM
 int dwRange(void);					// 	calculating range from tag
+void dwLatchExchange(void);			//	PPINDX, RXPACC_NOSAT and CIR window of the frame just received
+int dwRangeRound(uint8_t k_req);		//	SEARCH_TWR: 1..K exchanges (9F), shortest valid range kept
+uint8_t dwLdeCfg1(void);			//	LDE_CFG1 in force: lde_cfg1 or the 9G NLOS preset
+bool Link_WantHello(void);
+bool Link_Coexisting(void);
+void Link_BeforePoll(void);
+void Link_FillExtPoll(twr_anchor_ext_msg_t *p);
+void Link_OnResponse(const twr_tag_ext_msg_t *r, bool ext_poll, bool ext_resp, bool hello);
+void Link_OnExchange(uint8_t result, bool first, bool ext_poll, bool ext_resp);
 int dwTagMode(void);
 void dwScanMode(void);		 		// 	searching for DW messages on air to set BackOFF
 void dwConfig(dwt_config_t *config);//	Register configuration

@@ -24,6 +24,7 @@ HAL_StatusTypeDef Flash_Write(uint32_t address, uint64_t *data, uint32_t num_of_
 	// Lock Flash
 	HAL_FLASH_Lock();
 
+	Update_Cash_Mem();	// reads of the page go through ICACHE: show the new data now, not after a reset
 	return status;
 }
 

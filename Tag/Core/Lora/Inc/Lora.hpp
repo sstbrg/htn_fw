@@ -145,6 +145,11 @@ void RunRXStateMachine( void );
 void GetRssiSnr(int8_t *rssi, int8_t *snr);
 void Lora_Status( void );
 int Lora_TXidle( void );
+// LoRa TX power under the anchor's control (doc section 9D/9J), applied at the next packet
+void Lora_LinkMax(void);
+uint8_t Lora_LinkRequest(uint16_t src, uint8_t seq, int8_t req, uint8_t confirm, bool multi);
+bool Lora_LinkPending(void);
+int8_t Lora_LinkPower(void);
 uint16_t scramble(uint16_t self_id);
 
 #ifdef __cplusplus

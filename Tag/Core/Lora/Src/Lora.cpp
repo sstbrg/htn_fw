@@ -29,17 +29,110 @@ RadioFlags_t radioFlags = { .txDone = false, .txTimeout = true, };
 extern LoraRxInfo_t lora_rxInfo;
 uint8_t lora_msg_index = 0;
 
+/* LoRa TX power under the anchor's control (doc section 9D/9J, rule zero). Louder takes effect at
+ * once; quieter only after request (seq) -> ack -> confirm. No owner poll for LINK_REVERT_MS after
+ * a quieter step: back to the previous power; for LINK_SILENCE_MS: maximum. A legacy poll, or polls
+ * from two stations, mean maximum at once. Applied when the next packet starts. */
+#define LINK_NO_OWNER 0xFFFF
+static int8_t lora_radio_dbm = TX_OUTPUT_POWER;	// in the radio now
+static int8_t lora_cur = TX_OUTPUT_POWER;		// what the next packet uses
+static int8_t lora_prev = TX_OUTPUT_POWER;		// before the last quieter step
+static int8_t pend_dbm = TX_OUTPUT_POWER;
+static uint8_t pend_seq = 0, pend_valid = 0;
+static uint8_t last_seq = 0;
+static int8_t last_req = TX_OUTPUT_POWER;
+static uint16_t owner_src = LINK_NO_OWNER;		// the anchor whose requests count
+static uint32_t owner_tick = 0;
+static uint32_t lora_tx_tick = 0;	// last SetTx, for the lost-interrupt recovery
+
+
 SX126xHal Radio(&hspi2, SX_SPI2_CS_GPIO_Port, SX_SPI2_CS_Pin,
 SX_BUSY_GPIO_Port, SX_BUSY_Pin, SX_DIO1_GPIO_Port, SX_DIO1_Pin,
 NULL, 0, NULL, 0, // Represent DIO2 and DIO3
 		SX_RESET_GPIO_Port, SX_RESET_Pin, SX_Mode_FRx_Pin, SX_Mode_SX126x_Pin,
 		SX_ANT_SW_GPIO_Port, SX_ANT_SW_Pin, &RadioEvents);
 
+void Lora_LinkMax(void) {
+	lora_cur = lora_prev = TX_OUTPUT_POWER;
+	pend_valid = 0;
+	owner_src = LINK_NO_OWNER;
+}
+
+// Extended poll from `src`; returns the ack for its response (0 = not this anchor's request).
+uint8_t Lora_LinkRequest(uint16_t src, uint8_t seq, int8_t req, uint8_t confirm, bool multi) {
+	uint32_t now = HAL_GetTick();
+	if (multi) {			// 9K: two stations, no adaptation
+		Lora_LinkMax();
+		return 0;
+	}
+	if (req == LINK_LORA_KEEP)
+		return 0;
+	if (req > TX_OUTPUT_POWER) req = TX_OUTPUT_POWER;
+	if (req < LINK_LORA_MIN_DBM) req = LINK_LORA_MIN_DBM;
+	if (owner_src != LINK_NO_OWNER && owner_src != src && now - owner_tick <= LINK_SILENCE_MS) {
+		if (req > lora_cur) {	// another anchor: only louder counts
+			lora_cur = lora_prev = req;
+			pend_valid = 0;
+		}
+		return 0;
+	}
+	if (owner_src != src) {	// a new owner starts from scratch
+		owner_src = src;
+		last_seq = seq ^ 0xFF;
+	}
+	owner_tick = now;
+	if (seq != last_seq || req != last_req) {	// a new request (a repeat is a keep-alive)
+		last_seq = seq;
+		last_req = req;
+		if (req >= lora_cur) {	// louder or the same: at once
+			lora_cur = lora_prev = req;
+			pend_valid = 0;
+		} else {				// quieter: wait for the confirm
+			pend_seq = seq;
+			pend_dbm = req;
+			pend_valid = 1;
+		}
+	}
+	if (pend_valid && confirm != 0 && confirm == pend_seq) {
+		lora_prev = lora_cur;
+		lora_cur = pend_dbm;
+		pend_valid = 0;
+	}
+	return seq;
+}
+
+bool Lora_LinkPending(void) {
+	return pend_valid;
+}
+
+// Power for the next packet, after the silence reverts.
+int8_t Lora_LinkPower(void) {
+	if (owner_src != LINK_NO_OWNER) {
+		uint32_t quiet = HAL_GetTick() - owner_tick;
+		if (quiet > LINK_SILENCE_MS)
+			Lora_LinkMax();
+		else if (quiet > LINK_REVERT_MS && lora_cur < lora_prev)
+			lora_cur = lora_prev;
+	}
+	return lora_cur;
+}
+
+static void Lora_ApplyTxPower(void) {
+	int8_t dbm = Lora_LinkPower();
+	if (dbm != lora_radio_dbm) {
+		radioConfiguration.txPower = dbm;
+		Radio.SetTxParams(dbm, radioConfiguration.txRampTime);
+		lora_radio_dbm = dbm;
+	}
+}
+
 void Lora_init() {
 
 	Radio.Init();
 	SetConfiguration(&radioConfiguration, SELF_ID);
 	ConfigureGeneralRadio(&Radio, &radioConfiguration);
+	lora_radio_dbm = radioConfiguration.txPower;
+	Lora_LinkMax();
 
 	Lora_Status();
 	if (lora_rxInfo.no_lora == false) {
@@ -68,9 +161,9 @@ void Lora_Status() {
 		 *  // 2ms to wait for lora chip wakeup when its in sleep cycle mode
 		 *  in order to truly check its status, else the value might be 0 = not alive.
 		 */
-		uint32_t ms_time_tick = _1ms_tick+2;
+		uint32_t t0 = _1ms_tick;	// wrap-safe; 5 ms on the 1 ms tick (2 old 2.05 ms ticks)
 
-		while((ms_time_tick > _1ms_tick));//|| (hspi2.State != HAL_SPI_STATE_READY)); // wait for 1ms to wakeup lora
+		while (_1ms_tick - t0 < 5);	// wait for the lora chip to wake up
 	}
 
 	chip_mode = Radio.GetStatus().Value;
@@ -143,6 +236,8 @@ void RunTXStateMachine(status_bits errors) {
 
 	PrepareBuffer(&Radio, &messageToSend);
 	ConfigureRadioTx(&Radio, &radioConfiguration);
+	Lora_ApplyTxPower();
+	lora_tx_tick = HAL_GetTick();
 	Radio.SetTx(radioConfiguration.txTimeout);
 	HAL_GPIO_TogglePin(SX_LED_TX_GPIO_Port, SX_LED_TX_Pin); // Turn TXLED On
 	HAL_GPIO_WritePin(SX_LED_RX_GPIO_Port, SX_LED_RX_Pin, GPIO_PIN_RESET); // Turn RX LED Off
@@ -253,6 +348,20 @@ void GetRssiSnr(int8_t *rssi, int8_t *snr) {
 
 }
 
+/* A TX whose completion interrupt never comes would stop the beacon for good while the main
+ * loop keeps the watchdog fed. The radio's own TX timeout is ~0.78 s (50000 x 15.625 us), so no
+ * event for LORA_RECOVER_MS means it was lost: reset and reconfigure the radio, power included. */
+#define LORA_RECOVER_MS 3000
+
 int Lora_TXidle(void) {
+	if (!radioFlags.txDone && !radioFlags.txTimeout && !lora_rxInfo.no_lora
+			&& HAL_GetTick() - lora_tx_tick > LORA_RECOVER_MS) {
+		Radio.Init();
+		ConfigureGeneralRadio(&Radio, &radioConfiguration);	// txPower holds the power in use
+		Radio.ClearIrqStatus(0xFFFF);
+		lora_radio_dbm = radioConfiguration.txPower;
+		Lora_Status();
+		radioFlags.txTimeout = true;
+	}
 	return ((radioFlags.txDone || radioFlags.txTimeout) && !lora_rxInfo.no_lora);
 }
