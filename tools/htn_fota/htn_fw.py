@@ -33,6 +33,7 @@ OP_START_PROG, OP_WRITE_BUFFER, OP_HEADER_FILE, OP_ERROR = 16, 17, 18, 0xEE
 OP_FOTA_ENTER, OP_FOTA_LOAD_BEGIN, OP_FOTA_LOAD_DATA, OP_FOTA_START = 0x40, 0x41, 0x42, 0x43
 OP_FOTA_STATUS, OP_FOTA_QUERY, OP_FOTA_ABORT, OP_FOTA_EXIT = 0x44, 0x45, 0x46, 0x47
 OP_FOTA_DISCOVER, OP_FOTA_DISCOVER_LIST = 0x48, 0x49
+OP_LED_TEST = 0x4B
 CHUNK = 128
 CRC_LEN = 255 * 8192
 APP_BASE = 0x08200000
@@ -373,6 +374,29 @@ def cmd_query(ser, a):
     return 1
 
 
+LED_NAMES = ["battery bar 0 (PE14)", "battery bar 1 (PE11)", "battery bar 2 (PE8)", "battery bar 3 (PF15)",
+             "BIT fail", "BIT pass", "link", "RGB red (PE5)", "RGB green (PE6)", "RGB blue (PF8)",
+             "LoRa RX (PC9)", "LoRa TX (PA8)"]
+
+
+def cmd_led_test(ser, a):
+    """Light each LED the firmware can drive, one at a time, so the fitted ones can be identified."""
+    p = fota_cmd(ser, OP_LED_TEST, bytes([0, 0]))
+    count = p[1]
+    if p[0] != 0 or not count:
+        print("LED test not supported by this firmware")
+        return 1
+    for i in range(count):
+        name = LED_NAMES[i] if i < len(LED_NAMES) else f"LED {i}"
+        print(f"{i:2}: {name} ...", end="", flush=True)
+        fota_cmd(ser, OP_LED_TEST, bytes([i, 1]))
+        time.sleep(a.hold)
+        fota_cmd(ser, OP_LED_TEST, bytes([i, 0]))
+        print(" off")
+        time.sleep(0.4)
+    return 0
+
+
 def cmd_fota_exit(ser, _a):
     fota_exit(ser)
     print("left FOTA flasher mode")
@@ -398,6 +422,8 @@ def main():
     q.add_argument("--stay", action="store_true")
     d = sub.add_parser("discover", help="list FOTA targets in UWB range")
     d.add_argument("--stay", action="store_true")
+    lt = sub.add_parser("led-test", help="light each board LED in turn to see which are fitted")
+    lt.add_argument("--hold", type=float, default=1.5, help="seconds each LED stays on")
     sub.add_parser("fota-exit")
     sub.add_parser("selftest")
     a = ap.parse_args()
@@ -408,7 +434,7 @@ def main():
         return 0
     cmds = {"status": cmd_status, "flash": cmd_flash, "fota": cmd_fota, "query": cmd_query,
             "fota-exit": cmd_fota_exit,
-            "discover": cmd_discover}
+            "discover": cmd_discover, "led-test": cmd_led_test}
     with serial.Serial(a.port, BAUD, timeout=0.05) as ser:
         try:
             return cmds[a.cmd](ser, a)

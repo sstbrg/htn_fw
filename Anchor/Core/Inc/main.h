@@ -143,9 +143,11 @@ extern "C" {
  * 				FOTA target in dwScanMode. Image received into RAM, CRC checked, written from RAM.
  * anc3.1.1	[added] FOTA discovery, auto data-rate fallback, battery check
  * anc3.1.2	[changed] battery gauge read on every anchor; FOTA reports 255 only when no gauge answers
+ * anc3.1.3	[added] FOTA LEDs: target blinks from the handshake, loader link LED while loading
+ * anc3.1.4	[fixed] a tag stays awake while it counts down as FOTA target
  */
 
-#define VERSION "anc3.1.2"
+#define VERSION "anc3.1.4"
 
 
 #define IS_TAG false

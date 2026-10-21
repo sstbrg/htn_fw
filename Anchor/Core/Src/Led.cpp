@@ -103,6 +103,31 @@ void Link_Led(enum LedColor color) {
 	LinkTimeout = HAL_GetTick();
 }
 
+// LED identification (UART opcode 0x4B, `htn_fw.py led-test`): 0-3 battery bar,
+// 4 BIT fail, 5 BIT pass, 6 link (table above, active low), 7-9 RGB R/G/B
+// (active low), 10 LoRa RX, 11 LoRa TX (active high). Returns the LED count or -1.
+int Led_Set(int idx, int on)
+{
+	static const struct { GPIO_TypeDef *port; uint16_t pin; uint8_t active_low; } extra[] = {
+		{LED_R_GPIO_Port, LED_R_Pin, 1},
+		{LED_G_GPIO_Port, LED_G_Pin, 1},
+		{LED_B_GPIO_Port, LED_B_Pin, 1},
+		{SX_LED_RX_GPIO_Port, SX_LED_RX_Pin, 0},
+		{SX_LED_TX_GPIO_Port, SX_LED_TX_Pin, 0},
+	};
+	const int n_extra = sizeof(extra) / sizeof(extra[0]);
+	if (idx >= 0 && idx < LED_NUM) {
+		HAL_GPIO_WritePin(PORT(idx), PIN(idx), on ? GPIO_PIN_RESET : GPIO_PIN_SET);
+	} else if (idx >= LED_NUM && idx < LED_NUM + n_extra) {
+		const int e = idx - LED_NUM;
+		HAL_GPIO_WritePin(extra[e].port, extra[e].pin, (on != 0) == (extra[e].active_low != 0) ? GPIO_PIN_RESET : GPIO_PIN_SET);
+	} else {
+		return -1;
+	}
+	StatusTimeout = LinkTimeout = batteryTimeout = HAL_GetTick();	// keep Led_Maintanence off them for a moment
+	return LED_NUM + n_extra;
+}
+
 void Battary_Led_OFF(void){
 	HAL_GPIO_WritePin(PORT(LED_BAT_0),PIN(LED_BAT_0), GPIO_PIN_SET);
 	HAL_GPIO_WritePin(PORT(LED_BAT_1),PIN(LED_BAT_1), GPIO_PIN_SET);

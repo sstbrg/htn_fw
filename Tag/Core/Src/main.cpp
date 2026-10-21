@@ -356,7 +356,7 @@ int main(void)
 
 #ifndef WITHOUT_WAKEUP
 		{	//	Low power handling
-			if(Lora_TXidle() && PWR_NeedToSleep() && !fota_busy()){
+			if(Lora_TXidle() && PWR_NeedToSleep() && !fota_keep_awake()){
 				lora_rxInfo.wakeup_cycle_enable = true;
 				PWR_Sleep();
 				wakeup_switch = false;

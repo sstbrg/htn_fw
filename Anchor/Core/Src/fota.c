@@ -54,6 +54,8 @@ static struct {
 	uint32_t crc;
 	uint32_t next;
 	uint32_t armed_at;
+	uint32_t t_led;
+	uint8_t led_on;
 } tg;
 
 static struct {
@@ -664,7 +666,7 @@ static void flasher_leds(void)
 	fl.t_led = now;
 	fl.led_on = !fl.led_on;
 	fota_port_status_led(fl.led_on);
-	fota_port_link_led((fl.state == FL_DATA || fl.state == FL_COMMIT) ? fl.led_on : 0);
+	fota_port_link_led((fl.state == FL_LOADING || fl.state == FL_DATA || fl.state == FL_COMMIT) ? fl.led_on : 0);
 }
 
 static int flasher_in_session(void)
@@ -681,13 +683,27 @@ void fota_poll(void)
 		flasher_leds();
 		return;
 	}
-	if (tg.state == T_ARMED && HAL_GetTick() - tg.armed_at >= FOTA_COUNTDOWN_MS)
-		target_session();
+	if (tg.state == T_ARMED) {
+		uint32_t now = HAL_GetTick();
+		if (now - tg.armed_at >= FOTA_COUNTDOWN_MS) {
+			target_session();
+		} else if (now - tg.t_led >= FOTA_SLOW_BLINK_MS) {
+			// handshake accepted: show it during the countdown, before the data phase
+			tg.t_led = now;
+			tg.led_on = !tg.led_on;
+			fota_port_status_led(tg.led_on);
+		}
+	}
 }
 
 int fota_busy(void)
 {
 	return fl.mode;
+}
+
+int fota_keep_awake(void)
+{
+	return fl.mode || tg.state == T_ARMED;
 }
 
 static uint8_t urep[256];
@@ -736,6 +752,16 @@ int fota_uart_command(const uint8_t *msg, uint8_t len)
 			}
 			memcpy(&r[1 + 2 * k], &diff, 2);
 			memcpy(&r[7 + 2 * k], &last, 2);
+		}
+		uart_reply(op, r, sizeof(r));
+		return 1;
+	}
+	if (op == UART_OPCODE_LED_TEST) {
+		uint8_t r[2] = {FOTA_ERR_STATE, 0};
+		if (plen >= 2) {
+			int n = fota_port_led_set(p[0], p[1]);
+			r[0] = n < 0 ? FOTA_ERR_STATE : FOTA_OK;
+			r[1] = (uint8_t)(n < 0 ? 0 : n);
 		}
 		uart_reply(op, r, sizeof(r));
 		return 1;

@@ -136,9 +136,11 @@ extern "C" {
  * 				FOTA target in dwRange. Image received into RAM, CRC checked, written from RAM.
  *
  * tag3.1.1	[added] FOTA discovery, auto data-rate fallback, battery check
+ * tag3.1.2	[added] FOTA LEDs: target blinks from the handshake, loader link LED while loading
+ * tag3.1.3	[fixed] a tag stays awake while it counts down as FOTA target
  */
 
-#define VERSION "tag3.1.1"
+#define VERSION "tag3.1.3"
 
 #define IS_TAG true
 

@@ -38,6 +38,7 @@ void Battary_Led_OFF(void);
 void Led_Power_Up_State(uint8_t uwb_status , uint8_t lora_status);
 void Led_show(void);
 void Init_Leds(uint8_t HW_Version);
+int Led_Set(int idx, int on);
 #ifdef __cplusplus
 }
 #endif
