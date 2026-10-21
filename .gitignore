@@ -14,6 +14,9 @@ objects.list
 # Python
 __pycache__/
 
+# Local firmware releases (tools/fw_release.py); published ones live in GitHub releases
+releases/
+
 # Eclipse / CubeIDE workspace state
 .metadata/
 *.launch.bak
