@@ -21,7 +21,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]   # repo root (tools/htn_fota/..)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import htn_fw  # noqa: E402  (image_crc)
 
@@ -166,7 +166,7 @@ def ci_check_bump(base):
         new_ver = version_string(kind)
         print(f"{kind}: sources {'changed' if changed else 'unchanged'}, VERSION {old_ver} -> {new_ver}")
         if changed and old_ver == new_ver:
-            bad.append(f"{kind} sources changed but VERSION is still {new_ver}: bump it (tools/fw_release.py bump {kind})")
+            bad.append(f"{kind} sources changed but VERSION is still {new_ver}: bump it (tools/htn_fota/fw_release.py bump {kind})")
     for b in bad:
         print(f"::error::{b}")
     return 1 if bad else 0
@@ -198,8 +198,8 @@ def ci_publish():
         shutil.copy2(d / "manifest.json", mdst)
         assets.append(mdst)
         notes.append(f"| {kind} | {ver} | {man['size']} B | {man['crc']} | `{man['sha256'][:16]}…` |")
-    notes += ["", "Flash over USB: `tools/htn_fw.py --port <port> flash <ver>.bin`.",
-              "Over the air: `tools/fw_wizard.py` (Download from GitHub), or `tools/htn_fw.py fota <id> <ver>.bin`.",
+    notes += ["", "Flash over USB: `tools/htn_fota/htn_fw.py --port <port> flash <ver>.bin`.",
+              "Over the air: `tools/htn_fota/fw_wizard.py` (Download from GitHub), or `tools/htn_fota/htn_fw.py fota <id> <ver>.bin`.",
               "The .hex carries its own addresses (0x08200000); never write a .bin to 0x08000000 (bootloader)."]
     subprocess.run(["gh", "release", "create", tag, "--title", tag.replace("fw-", "Firmware "),
                     "--notes", "\n".join(notes), *map(str, assets)], cwd=ROOT, check=True)

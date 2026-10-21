@@ -13,6 +13,7 @@ objects.list
 
 # Python
 __pycache__/
+.venv/
 
 # Local firmware releases (tools/fw_release.py); published ones live in GitHub releases
 releases/
