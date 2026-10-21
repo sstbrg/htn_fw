@@ -48,7 +48,9 @@ be any tag or anchor running 3.1.0 or newer. The board you update (the
 2. **FOTA loader mode.** Press **Enable FOTA loader mode**. The loader stops its
    normal work and its status LED blinks fast (on anchors: a battery-bar LED).
 3. **Choose firmware.** Pick a saved release, press **Download latest from
-   GitHub**, **Build new release...**, or **Browse .bin...**.
+   GitHub**, **Build new release...**, or **Browse .bin...**. In **Build new
+   release...**, tick **Also publish on GitHub** to commit the version bump,
+   push, and have CI publish the release (see Releases below).
 4. **Find the target.** Press **Scan for targets**. Every board in UWB range
    answers with its id, type, firmware and battery. Pick the one to update.
    Boards on 3.1.0 don't answer a scan: type their id and press **Connect**.
@@ -120,6 +122,7 @@ $PY tools/htn_fota/fw_release.py list
 $PY tools/htn_fota/fw_release.py new anchor --part patch --note "what changed"   # bump + build + save
 $PY tools/htn_fota/fw_release.py build tag                                        # build + save, no bump
 $PY tools/htn_fota/fw_release.py fetch                                            # latest GitHub release
+$PY tools/htn_fota/fw_release.py publish anchor                                   # commit bump, push, CI publishes
 ```
 
 A release is saved under `releases/<anchor|tag>/<version>/` with the `.bin`,
@@ -129,6 +132,16 @@ sha256, git commit, toolchain). `releases/` is not in git.
 On GitHub, every pull request to `main` builds both boards and fails if Anchor
 or Tag code changed without a version bump. Merging creates a release
 `fw-anc<ver>-tag<ver>` with the images; `fetch` and the wizard download it.
+
+`publish` (and the wizard's **Also publish on GitHub**) releases what is
+committed, never a local build: it refuses if other firmware changes are
+uncommitted, commits the version bump as `release: <version>`, and pushes. On
+`main` the push publishes the release; on any other branch it starts the CI
+workflow by hand and the release is a pre-release. Starting the workflow by
+hand only works once `.github/workflows/firmware.yml` is on `main`.
+
+Building by hand: `tools/build.sh Anchor`, `tools/build.sh Tag`,
+`tools/build.sh bootloader_hitan` (outputs in `<Project>/Debug/`).
 
 ## Troubleshooting
 

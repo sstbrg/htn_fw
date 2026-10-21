@@ -413,6 +413,7 @@ class Wizard(tk.Tk):
         kind = tk.StringVar(value=self.loader_target_kind_guess())
         part = tk.StringVar(value="patch")
         note = tk.StringVar()
+        publish = tk.BooleanVar(value=False)
         ttk.Label(f, text="Board").grid(row=0, column=0, sticky="w")
         ttk.Combobox(f, textvariable=kind, values=("anchor", "tag"), state="readonly", width=10).grid(row=0, column=1, sticky="w")
         cur = ttk.Label(f, text="")
@@ -422,6 +423,8 @@ class Wizard(tk.Tk):
                      width=12).grid(row=1, column=1, sticky="w")
         ttk.Label(f, text="Changelog note").grid(row=2, column=0, sticky="w")
         ttk.Entry(f, textvariable=note, width=50).grid(row=2, column=1, columnspan=2, sticky="we")
+        ttk.Checkbutton(f, variable=publish, text="Also publish on GitHub (commits the version bump, pushes, "
+                        "CI builds and publishes the release)").grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
         def refresh(*_):
             cur.configure(text=f"current: {fw_release.version_string(kind.get())}")
@@ -429,7 +432,7 @@ class Wizard(tk.Tk):
         refresh()
 
         def go():
-            k, pt, nt = kind.get(), part.get(), note.get().strip() or None
+            k, pt, nt, pub = kind.get(), part.get(), note.get().strip() or None, publish.get()
             dlg.destroy()
             self.progress(0, f"building {k}...")
 
@@ -439,15 +442,22 @@ class Wizard(tk.Tk):
                 self.progress(30, f"building {k}...")
                 if not fw_release.build(k, log=self.log):
                     raise RuntimeError(f"{k} build failed (see log)")
-                self.progress(90, "saving release...")
-                return fw_release.save(k, nt, log=self.log)
+                self.progress(85, "saving release...")
+                out = fw_release.save(k, nt, log=self.log)
+                if pub:
+                    self.progress(92, "publishing on GitHub...")
+                    try:
+                        self.log(fw_release.publish(k, log=self.log), "ok")
+                    except Exception as e:  # the local release is still usable
+                        self.log(f"GitHub publish failed: {e}", "err")
+                return out
 
             def done(out):
                 self.progress(100, f"release saved: {out.name}")
                 self.fill_releases(select_dir=out)
                 self.on_pick_release()
             self.run(job, done)
-        ttk.Button(f, text="Build", command=go, style="Big.TButton").grid(row=3, column=2, sticky="e", pady=(12, 0))
+        ttk.Button(f, text="Build", command=go, style="Big.TButton").grid(row=4, column=2, sticky="e", pady=(12, 0))
 
     def loader_target_kind_guess(self):
         return self.release["kind"] if self.release else "anchor"

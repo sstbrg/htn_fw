@@ -5,6 +5,7 @@
   fw_release.py bump anchor [--part patch|minor|major | --set 3.2.0] [--note "what changed"]
   fw_release.py build tag                # build + save releases/tag/<version>/
   fw_release.py new anchor --part minor --note "..."   # bump + build + save
+  fw_release.py publish anchor          # commit the bump, push, CI publishes the GitHub release
 
 A release directory holds the .bin/.hex/.elf/.map and manifest.json
 (version, bootloader CRC, size, sha256, git commit, toolchain, date).
@@ -176,7 +177,7 @@ def release_tag():
     return f"fw-{version_string('anchor')}-{version_string('tag')}"
 
 
-def ci_publish():
+def ci_publish(prerelease=False):
     """Create the GitHub release for the current versions from releases/ (after `build`). Skips if it exists."""
     tag = release_tag()
     if subprocess.run(["gh", "release", "view", tag], cwd=ROOT, capture_output=True).returncode == 0:
@@ -202,9 +203,48 @@ def ci_publish():
               "Over the air: `tools/htn_fota/fw_wizard.py` (Download from GitHub), or `tools/htn_fota/htn_fw.py fota <id> <ver>.bin`.",
               "The .hex carries its own addresses (0x08200000); never write a .bin to 0x08000000 (bootloader)."]
     subprocess.run(["gh", "release", "create", tag, "--title", tag.replace("fw-", "Firmware "),
-                    "--notes", "\n".join(notes), *map(str, assets)], cwd=ROOT, check=True)
+                    "--notes", "\n".join(notes), *(["--prerelease"] if prerelease else []), *map(str, assets)],
+                   cwd=ROOT, check=True)
     print(f"published {tag}")
     return 0
+
+
+def publish(kind, log=print):
+    """Commit the VERSION bump of `kind`, push the branch and let CI build and publish the GitHub release.
+
+    The release must match committed code, so this refuses if anything else in
+    the firmware projects is uncommitted. On main the push itself triggers the
+    release; on other branches the workflow is started by hand (pre-release),
+    which GitHub allows once .github/workflows/firmware.yml is on main.
+    Returns a short description of what was started."""
+    def git(*a, check=True):
+        r = subprocess.run(["git", *a], cwd=ROOT, capture_output=True, text=True)
+        if check and r.returncode:
+            raise RuntimeError(f"git {' '.join(a)}: {r.stderr.strip() or r.stdout.strip()}")
+        return r.stdout.rstrip()    # keep leading spaces: `status --porcelain` lines start with " M"
+    mh = str(main_h(kind).relative_to(ROOT))
+    dirty = [l[3:] for l in git("status", "--porcelain", "--untracked-files=no", "--", "Anchor", "Tag",
+                                "bootloader_hitan").splitlines()]
+    others = [f for f in dirty if f != mh]
+    if others:
+        raise RuntimeError("commit or stash these firmware changes first, the release must match committed code: "
+                           + ", ".join(others[:5]) + (" ..." if len(others) > 5 else ""))
+    ver = version_string(kind)
+    branch = git("rev-parse", "--abbrev-ref", "HEAD")
+    if mh in dirty:
+        git("commit", "-m", f"release: {ver}", "--", mh)
+        log(f"committed version bump {ver} on {branch}")
+    git("push")
+    log(f"pushed {branch}")
+    tag = release_tag()
+    if branch == "main":
+        return f"pushed main: CI builds and publishes {tag}"
+    r = subprocess.run(["gh", "workflow", "run", "firmware.yml", "--ref", branch], cwd=ROOT,
+                       capture_output=True, text=True)
+    if r.returncode:
+        raise RuntimeError("could not start the CI release workflow (it must already be on main): "
+                           + (r.stderr.strip() or r.stdout.strip()))
+    return f"CI started on {branch}: it builds and publishes pre-release {tag} (see GitHub Actions)"
 
 
 def fetch(tag=None, log=print):
@@ -241,7 +281,10 @@ def main():
     sub.add_parser("list")
     p = sub.add_parser("ci-check-bump", help="CI: fail if sources changed without a VERSION bump")
     p.add_argument("base")
-    sub.add_parser("ci-publish", help="CI: create the GitHub release from releases/")
+    p = sub.add_parser("ci-publish", help="CI: create the GitHub release from releases/")
+    p.add_argument("--prerelease", action="store_true")
+    p = sub.add_parser("publish", help="commit the version bump, push, and let CI publish the GitHub release")
+    p.add_argument("kind", choices=PROJECTS)
     p = sub.add_parser("fetch", help="download a GitHub release into releases/")
     p.add_argument("tag", nargs="?")
     for name in ("bump", "new"):
@@ -259,7 +302,10 @@ def main():
     if a.cmd == "ci-check-bump":
         return ci_check_bump(a.base)
     if a.cmd == "ci-publish":
-        return ci_publish()
+        return ci_publish(a.prerelease)
+    if a.cmd == "publish":
+        print(publish(a.kind))
+        return 0
     if a.cmd == "fetch":
         fetch(a.tag)
         return 0

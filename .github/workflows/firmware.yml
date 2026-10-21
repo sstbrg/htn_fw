@@ -4,6 +4,8 @@
 #  - push to main (a merged PR): build and publish a GitHub release
 #    fw-anc<ver>-tag<ver> with .bin/.hex/.elf and manifests (CRC, sha256).
 #    If that release already exists (no version bump), nothing is published.
+#  - manual run (workflow_dispatch, e.g. from the FOTA wizard) on another
+#    branch: same, published as a pre-release.
 #
 # The toolchain is Ubuntu 24.04's gcc-arm-none-eabi 13.2.rel1, the same one the
 # local tools/build.sh builds were made and tested with.
@@ -14,6 +16,9 @@ on:
     branches: [main]
   push:
     branches: [main]
+  # started by fw_wizard.py / fw_release.py publish for a pushed branch;
+  # releases from branches other than main are marked pre-release
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -60,7 +65,9 @@ jobs:
             releases/*/*/manifest.json
 
       - name: Publish GitHub release
-        if: github.event_name == 'push'
+        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: tools/htn_fota/.venv/bin/python tools/htn_fota/fw_release.py ci-publish
+        run: >-
+          tools/htn_fota/.venv/bin/python tools/htn_fota/fw_release.py ci-publish
+          ${{ github.ref != 'refs/heads/main' && '--prerelease' || '' }}
