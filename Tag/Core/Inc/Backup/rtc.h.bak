@@ -1,0 +1,60 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file    rtc.h
+  * @brief   This file contains all the function prototypes for
+  *          the rtc.c file
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2025 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+/* Define to prevent recursive inclusion -------------------------------------*/
+#ifndef __RTC_H__
+#define __RTC_H__
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Includes ------------------------------------------------------------------*/
+#include "main.h"
+
+/* USER CODE BEGIN Includes */
+
+/* USER CODE END Includes */
+
+extern RTC_HandleTypeDef hrtc;
+
+/* USER CODE BEGIN Private defines */
+
+//#define RTC_WRITE_COUNTER(IDX,VAL)	{\
+//		TAMP->BKP##IDX##R = VAL;		\
+//}
+#define UPDATE_FW_MODE 0x12345678
+#define BKUP_REG0	5
+
+/* USER CODE END Private defines */
+
+void MX_RTC_Init(void);
+
+/* USER CODE BEGIN Prototypes */
+void BackupRegister_write(void);
+uint32_t BackupRegister_read(void);
+bool Update_FW_Boot_Flag(void);
+/* USER CODE END Prototypes */
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __RTC_H__ */
+

@@ -1,0 +1,16 @@
+# Build outputs (CubeIDE Debug/Release). Generated makefiles (*.mk, makefile)
+# stay tracked so `make -C <Project>/Debug all` builds without the IDE.
+*.o
+*.d
+*.su
+*.cyclo
+*.elf
+*.hex
+*.bin
+*.map
+*.list
+objects.list
+
+# Eclipse / CubeIDE workspace state
+.metadata/
+*.launch.bak
