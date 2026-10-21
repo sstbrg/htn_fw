@@ -533,16 +533,11 @@ SetAnchor_self_id();
 <li><b>Ground state = today's frames.</b> The legacy 12-byte poll and 20-byte response never change; older firmware checks exactly those lengths, and <code>static_assert</code>s lock them. Extended frames (17 / 24 bytes) are used only after the tag answers a hello. Two unanswered extended polls, a legacy answer, 1&nbsp;s of silence, another tag id or two stations put the anchor back on legacy polls, and a legacy poll always puts a new tag at maximum. Every old/new mix was ranged on the bench.</li>
 <li><b>Make-before-break:</b> quieter LoRa power goes request (seq) → ack → confirm → proof. Louder takes effect at once. UWB power is per exchange — the tag answers each poll at the level that poll asked for and returns to maximum right after — so there is no shared UWB state to get out of step.</li>
 <li><b>Rate-limited and bounded:</b> quieter steps are at least <code>step_interval</code> apart (default 2&nbsp;s) and need 2 good frames after the previous step. UWB never steps below sensitivity +&nbsp;10&nbsp;dB. LoRa only steps up below −7&nbsp;dB SNR (SF12 decodes to −20&nbsp;dB) or when the signal is more than 3 bands under target.</li>
+<li><b>Two control paths (9J):</b> configuration reaches the tag over LoRa (primary) and the extended UWB poll (backup), through one handler. Either path failing only delays a change. Commands and acks use inverted IQ, so no beacon receiver — new or old firmware — ever decodes them.</li>
 <li><b>Unilateral reverts:</b> the tag drops a quieter LoRa step after 500&nbsp;ms and goes to maximum after 1&nbsp;s without its owner anchor. The anchor goes to maximum after a missed response (UWB), after 1.5&nbsp;s without a LoRa packet, or after a handshake that does not complete in 5 tries.</li>
 </ul>
 <p><b>Not done:</b></p>
 <ul>
-<li>The "LoRa control plane": not built yet. Today the tag never listens on LoRa (<code>WITHOUT_WAKEUP</code>; its half-duplex SX1262 sends beacons back to back), so all control rides on UWB, which the tag hears on every poll.
-<b>Agreed next (2026-10-22):</b> the tag accepts the same requests over LoRa as over UWB, through one seq-based handler, acknowledged on both paths.
-<ul>
-<li><b>Listen window:</b> after every ~20th beacon while UWB polls arrive (≈1&nbsp;% beacon cost); after every beacon once UWB has been silent for 1&nbsp;s.</li>
-<li><b>Anchor side:</b> commands go at full power on the robust SF, in packet lengths older anchors reject.</li>
-</ul></li>
 <li>Channel changes: none exist, because 9H is not done.</li>
 <li>The full 100-trial chaos test: not run. What was run: host stops, feature switched off, two stations, every firmware mix, both tag revisions.</li>
 </ul>
@@ -624,6 +619,20 @@ _dwt_enableclocks(READ_ACC_OFF);</pre>
 <li>Floor −9&nbsp;dBm as specified.</li>
 <li>The request and echo ride in the extended UWB frames, not in the LoRa wake frame (the tag does not listen on LoRa; wake-ups are always at maximum).</li>
 </ul>
+<p><b>Bench sweep 2026-10-22</b> (bench level pin, opcode 22 byte 10; 150 exchanges per level, each confirmed by the tag's echo):</p>
+<table class="avoid-break"><thead><tr><th>Tag / station</th><th>TX gain</th><th>Range</th><th>rx est.</th><th>first path</th><th>RX−FP</th><th>|FP−PP|</th></tr></thead><tbody>
+<tr><td>Rev D, LOS &lt;&nbsp;1&nbsp;m</td><td>30.5 → 9.5&nbsp;dB</td><td><b>0.860 → 0.985&nbsp;m</b></td><td>−77.7 → −78.9</td><td>−81.3 → −82.1</td><td>3.0–3.6</td><td>1.9–3.5</td></tr>
+<tr><td>Rev C, LOS 1.5&nbsp;m</td><td>10 → 1&nbsp;dB</td><td>1.470 → 1.520&nbsp;m</td><td>−78.5 → −79.1</td><td>−81.4 → −82.1</td><td>2.8–3.1</td><td>1.7</td></tr>
+<tr><td>Rev D, NLOS 4&nbsp;m</td><td>30.5 → 9.5&nbsp;dB</td><td>4.40–4.60&nbsp;m (not monotonic)</td><td>−75.1 → −79.8</td><td>−88.3 → −94.1</td><td>12.7–14.3</td><td>6–14</td></tr>
+<tr><td>Rev C, NLOS 5&nbsp;m</td><td>10 → 1&nbsp;dB</td><td>5.04–5.08&nbsp;m</td><td>−74.4 → −76.4</td><td>−82.2 → −84.2</td><td>7.6–7.9</td><td>5.9–6.1</td></tr>
+</tbody></table>
+<ul>
+<li><b>Range shows the effect:</b> close in a strong signal reads short. Rev D at &lt;&nbsp;1&nbsp;m reads 12.5&nbsp;cm short at full power — the APS011 bias, the largest systematic error close in.</li>
+<li><b>Level metrics are compressed by the AGC:</b> 21&nbsp;dB less TX moves the rx estimate 1.2&nbsp;dB and the first path 0.8&nbsp;dB in LOS. F1/noise is not monotonic and the CIR peak is flat. None of them can drive the loop.</li>
+<li><b>RX−FP and |FP−PP| do not depend on TX power</b> and separate LOS from NLOS at every level (the 9G threshold of 6&nbsp;dB sits between them).</li>
+<li><b>Valid ranges stayed ≈&nbsp;99&nbsp;%</b> at every level.</li>
+</ul>
+<p><b>Consequence:</b> the UWB power input must be the range. Either lower the power by distance, or keep full power and remove the bias on the host from a (range, TX level) table — the tag echoes its level on every exchange.</p>
 <p><b>Open — the UWB loop has no usable input:</b> <code>rx_power_dbm</code> reads −78&nbsp;dBm at 1.2&nbsp;m line of sight and −75&nbsp;dBm with Rev D's 20&nbsp;dB more TX gain. The DW1000 estimate goes flat above ≈−85&nbsp;dBm true power, so the loop never sees "hot" and stays at maximum (fails safe, buys nothing). It needs another input, such as a level schedule from the anchor's own range calibrated against APS011, before it is worth enabling.</p>
 </div>
 
@@ -711,7 +720,7 @@ _dwt_enableclocks(READ_ACC_OFF);</pre>
 </ul>
 
 <div class="fw part"><div class="fwh">Firmware answer · anc3.2.0 / tag3.2.0 · <span class="fws">Partly done</span></div>
-<p><b>Changed:</b> the handshake exists for the one setting that is negotiated today, the tag's LoRa power. It runs over UWB only.</p>
+<p><b>Changed — LoRa power handshake</b> (UWB, every poll):</p>
 <ul>
 <li><b>Request:</b> <code>seq</code> + value.</li>
 <li><b>Acknowledge:</b> <code>ack_seq</code> + the "pending" flag.</li>
@@ -720,7 +729,30 @@ _dwt_enableclocks(READ_ACC_OFF);</pre>
 <li><b>Limits:</b> 5 tries per step. The tag ignores a repeated seq (keep-alive) and locks to one owner anchor; requests from others count only when louder.</li>
 <li><b>Reverts:</b> 500&nbsp;ms → previous power, 1&nbsp;s → maximum.</li>
 </ul>
-<p><b>Omitted:</b> LoRa as a second path, listen rotation and profile switching. Those only matter with 9H.</p>
+<p><b>Changed — configuration channel, two paths</b> (2026-10-22):</p>
+<ul>
+<li><b>Primary, LoRa.</b> After a beacon whose counter is a multiple of its listen period, the tag listens 150&nbsp;ms for a command preamble (the RX timer stops on a preamble). The period is:
+  <ul>
+  <li>every beacon while no UWB poll has arrived for 1&nbsp;s;</li>
+  <li>every 4th while extended UWB polls arrive;</li>
+  <li>every 20th otherwise, and always with two stations.</li>
+  </ul>
+  The anchor sends only into slots the tag listens to; until the first ack tells it the period, it assumes 20, whose slots every period lands on. The command <code>sLoRaCmd</code> {magic 0xC3, tag, src, seq, item, value u16} and the immediate ack <code>sLoRaAck</code> {magic 0xA5, tag, seq, item, read-back u16, LoRa dBm, flags, listen period} are 11 bytes each — the same 13 symbols as a beacon at SF12. Both use <b>inverted IQ</b> and CRC (SX1262 errata §15.4 handled).</li>
+<li><b>Backup, UWB.</b> After 3&nbsp;s without a LoRa answer the item also rides the extended poll v2 (21 bytes; response 29 bytes). The tag answers "applying" (flag 0x10), applies the item after its response has gone out (a flash write must not risk the 5&nbsp;ms delayed TX), and gives the read-back on the next poll. v2 frames go only to tags whose hello answer carries version 2 (bits 5..1); tag3.2.0 keeps getting v1.</li>
+<li><b>One handler:</b> a repeat of the same (anchor, seq) is answered, not applied twice, whichever path it came by.</li>
+<li><b>Items:</b> 0 NOP, 2 listen period, 3 TX antenna delay, 4 RX antenna delay, 5 crystal trim. Delays must be 15000–18000 or 0xFFFF (default); out of range → rejected (flag 0x01), nothing changes. Only values that cannot cut the link.</li>
+<li><b>Host:</b> opcode 24 <code>TAG_CONFIG {tag u16, item u8, value u16}</code> queues one item; empty = status <code>{state (0 idle, 1 pending, 2 done, 3 failed after 60 s), item, value, read-back, flags, via (1 LoRa, 2 UWB), tag listen period, LoRa tries}</code>.</li>
+</ul>
+<p><b>Bench:</b></p>
+<ul>
+<li>NOP over LoRa in 10.5&nbsp;s (period 20).</li>
+<li>TX delay 16600 over LoRa with UWB silent: 17.3&nbsp;s, the first command waiting for a 20-slot. The tag's flash then holds 16600.</li>
+<li>Back to default over the UWB backup: 3.0&nbsp;s.</li>
+<li>An out-of-range value was rejected.</li>
+<li>Ranging stayed at 95–97&nbsp;% valid throughout.</li>
+<li>Beacon rate from the tag's counter: 1.74–1.76/s with UWB polling (≈1.83/s airtime limit), 1.18–1.27/s with UWB silent (a window after every beacon).</li>
+</ul>
+<p><b>Omitted:</b> listen rotation and profile switching (9H). The LoRa power handshake stays on UWB, because a LoRa round trip per 2&nbsp;dB step would take a listen cycle each; LoRa power can still be forced to maximum by the tag's own reverts.</p>
 </div>
 
 <h3>9K &nbsp;Two stations, one tag: adaptation is frozen, backoff untouched <span class="tag blocker">required</span></h3>
@@ -774,7 +806,7 @@ _dwt_enableclocks(READ_ACC_OFF);</pre>
 </tbody></table>
 
 <div class="fw"><div class="fwh">Firmware answer · anc3.2.0 / tag3.2.0 · <span class="fws">Done</span></div>
-<p><b>Changed:</b> opcode 22 <code>SET_LINK_FEATURES</code> with bytes 0–8 as tabled, plus <b>byte 9 <code>lora_owner</code></b> (1 = this anchor runs the LoRa loop; set it on one anchor per station — on MOB the front anchor). A shorter payload sets only the leading fields; empty = read. The reply is the 10-byte configuration. The configuration is RAM only and comes up all-off at boot.</p>
+<p><b>Changed:</b> opcode 22 <code>SET_LINK_FEATURES</code> with bytes 0–8 as tabled, plus <b>byte 10 <code>uwb_level_pin</code></b> (bench only: fixed UWB level for the tag's responses while bit2 is on, 0xFF = automatic; a pinned anchor tolerates 20 misses before legacy frames), plus <b>byte 9 <code>lora_owner</code></b> (1 = this anchor runs the LoRa loop; set it on one anchor per station — on MOB the front anchor). A shorter payload sets only the leading fields; empty = read. The reply is the 11-byte configuration. The configuration is RAM only and comes up all-off at boot.</p>
 <ul>
 <li>Extended frames run while bit2 (9D) or bit1 (9G) is on: both carry tag settings.</li>
 <li>Off means revert: clearing the last of them asks for maximum power and LOS until the tag shows it, then the anchor returns to legacy polls. Clearing only bit2 keeps the frames, puts UWB back at maximum at once, and stops the LoRa requests, so the tag returns to maximum within 1&nbsp;s.</li>
@@ -800,17 +832,10 @@ _dwt_enableclocks(READ_ACC_OFF);</pre>
 <li><b>Solve.</b> Range error per device: E<sub>A</sub> = (e<sub>AB</sub> + e<sub>AC</sub> − e<sub>BC</sub>)/2, E<sub>B</sub> = (e<sub>AB</sub> + e<sub>BC</sub> − e<sub>AC</sub>)/2, E<sub>C</sub> = (e<sub>AC</sub> + e<sub>BC</sub> − e<sub>AB</sub>)/2. Delay change per device: Δ = E / 2.346&nbsp;mm units in total, split evenly: TX += Δ/2 and RX += Δ/2. Write them with opcode 20.</li>
 <li><b>Iterate once.</b> Re-measure the three pairs; the residual should be under 2&nbsp;cm. Repeat step 3 on the residuals if not.</li>
 <li><b>Other anchors.</b> Range each one (as imposter) from a calibrated anchor. The whole error E = median − d belongs to the new anchor.</li>
-<li><b>Tags.</b> Range each tag at a known distance from a calibrated anchor (preferably two anchors; average them). E<sub>tag</sub> = median − d → TX/RX += E/(2 × 2.346&nbsp;mm) on the tag with opcode 20. Today that needs the tag on USB.</li>
+<li><b>Tags.</b> Range each tag at a known distance from a calibrated anchor (preferably two anchors; average them). E<sub>tag</sub> = median − d → TX/RX += E/(2 × 2.346&nbsp;mm) on the tag: opcode 20 over USB, or opcode 24 (items 3/4) over the air.</li>
 <li><b>Accept.</b> |median − d| &lt; 2&nbsp;cm at the calibration distance and &lt; 5&nbsp;cm at a second distance. Store the per-device values with date, temperature and firmware version in the analyzer.</li>
 </ol>
-<p><b>Over the air (proposed, not implemented):</b> calibrating a tag in place, at distance, needs the values pushed over UWB, which the tag listens to continuously.</p>
-<ul>
-<li>New anchor opcode 24 <code>TAG_CONFIG {tag_id, item, value}</code>.</li>
-<li>The anchor sends a UWB configuration frame with its own first-byte flag (as FOTA does). The tag checks the range, saves the value to flash, applies it and answers with the read-back.</li>
-<li>Items: TX/RX delay and crystal trim — values that cannot cut the link. The tag id is excluded.</li>
-<li>Older tags drop the frame (wrong length), and the anchor reports "no answer".</li>
-</ul>
-<p>Planned as anc3.2.1 / tag3.2.1. The analyzer step 6 then runs without a cable.</p>
+<p><b>Over the air (implemented, 9J):</b> the analyzer can push the values to a tag in place, at the calibration distance, without a cable. Send opcode 24 to any anchor of the station: item 3 for the TX delay, 4 for the RX delay, 0xFFFF for the default. Poll opcode 24 until <code>state</code> = 2 and check the read-back. LoRa delivers it, and the UWB backup takes over after 3&nbsp;s. Step 6 then runs without a cable; anchors are still set over their UART (opcode 20).</p>
 
 <div class="callout ok avoid-break">
   <b>Bench results anc3.2.0 / tag3.2.0 (2026-10-22).</b>
@@ -849,6 +874,8 @@ _dwt_enableclocks(READ_ACC_OFF);</pre>
     <tr><td><b><code>no_uwb</code> latched</b> (REC-003)</td><td>One bad DW1000 ID read on the tag disabled ranging until reset. The anchor cleared the flag even if init had failed.</td><td>Clear only on an initialised chip. <code>dwRecover()</code> retries every 5&nbsp;s with a full re-init.</td></tr>
     <tr><td><b><code>rxError</code> latched</b> (REC-004), anchor</td><td>After one RX error, every main-loop pass restarted LoRa RX.</td><td>Consumed once per restart.</td></tr>
     <tr><td><b>Backoff tick wrap</b> (REC-005), anchor</td><td>An expired deadline looked like a future one after the counter wrapped (49.7 days).</td><td>Wrap-safe compare; expired or implausible deadlines cleared every pass; never stores 0. Same fix in the hello hold and the tag's LoRa wake wait.</td></tr>
+    <tr><td><b>Stale LoRa buffer counted as a beacon</b>, anchor</td><td><code>GetPayload()</code> returns without copying when a packet is longer than 6 bytes. The return value was ignored, so the previous beacon was counted again with the new packet's RSSI. Older anchors still do this.</td><td>Return value and length checked. New packets on the tag's channel use inverted IQ, so older anchors never receive them at all.</td></tr>
+    <tr><td><b>SX1262 inverted-IQ errata</b>, driver</td><td>Datasheet §15.4: register 0x0736 bit 2 must be 0 with inverted IQ, or reception degrades.</td><td>Set and restored on every switch between beacon and command mode.</td></tr>
     <tr><td><b>Stale flash read-back</b>, tag</td><td><code>Flash_Write</code> did not invalidate ICACHE: a new id or setting showed only after a reset.</td><td><code>Update_Cash_Mem()</code> after writes, as on the anchor.</td></tr>
     <tr><td><b>LoRa SNR guard</b> (found on the bench)</td><td>Near compression the SX1262 reports only 3–4&nbsp;dB SNR at −50&nbsp;dBm, which blocked every power step.</td><td>Guard set from the demod limit: −7&nbsp;dB (SF12 decodes to −20; 10&nbsp;dB margin after one step).</td></tr>
   </tbody>
