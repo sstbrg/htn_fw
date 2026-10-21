@@ -34,18 +34,20 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib python3-serial
+            gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib
           arm-none-eabi-gcc --version | head -1
+          python3 -m venv tools/htn_fota/.venv
+          tools/htn_fota/.venv/bin/pip install -r tools/htn_fota/requirements.txt
 
       - name: VERSION bump check
         if: github.event_name == 'pull_request'
-        run: python3 tools/fw_release.py ci-check-bump origin/${{ github.base_ref }}
+        run: tools/htn_fota/.venv/bin/python tools/htn_fota/fw_release.py ci-check-bump origin/${{ github.base_ref }}
 
       - name: Build Anchor
-        run: python3 tools/fw_release.py build anchor --note "CI ${{ github.sha }}"
+        run: tools/htn_fota/.venv/bin/python tools/htn_fota/fw_release.py build anchor --note "CI ${{ github.sha }}"
 
       - name: Build Tag
-        run: python3 tools/fw_release.py build tag --note "CI ${{ github.sha }}"
+        run: tools/htn_fota/.venv/bin/python tools/htn_fota/fw_release.py build tag --note "CI ${{ github.sha }}"
 
       - name: Upload images
         uses: actions/upload-artifact@v4
@@ -61,4 +63,4 @@ jobs:
         if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 tools/fw_release.py ci-publish
+        run: tools/htn_fota/.venv/bin/python tools/htn_fota/fw_release.py ci-publish

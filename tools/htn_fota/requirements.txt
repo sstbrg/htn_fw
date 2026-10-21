@@ -1,0 +1,3 @@
+# PC tools (htn_fw.py, fw_release.py, fw_wizard.py). The wizard also needs Tk:
+# Ubuntu: sudo apt install python3-tk  (tkinter comes from the system Python)
+pyserial==3.5

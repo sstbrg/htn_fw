@@ -1,0 +1,153 @@
+# htn_fota: HITAN firmware tools
+
+Update anchors and tags over the air (FOTA over UWB), flash them over USB,
+and build and archive firmware releases.
+
+| Tool | What it does |
+|---|---|
+| `fw_wizard.py` | Step-by-step GUI for over-the-air updates. Start here. |
+| `htn_fw.py` | Command line: board status, USB flashing, FOTA, discovery. |
+| `fw_release.py` | Bump the version, build, and save releases; download GitHub releases. |
+
+## Setup
+
+Linux (tested on Ubuntu 24.04). Run from the repository root:
+
+```bash
+sudo apt install python3-venv python3-tk
+python3 -m venv tools/htn_fota/.venv
+tools/htn_fota/.venv/bin/pip install -r tools/htn_fota/requirements.txt
+```
+
+Your user must be allowed to open serial ports (member of the `dialout` group).
+
+To build firmware you also need the ARM toolchain:
+
+```bash
+sudo apt install gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib
+```
+
+All commands below run from the repository root. `PY` is short for the venv's Python:
+
+```bash
+PY=tools/htn_fota/.venv/bin/python
+```
+
+## Update a board over the air (GUI)
+
+```bash
+$PY tools/htn_fota/fw_wizard.py
+```
+
+You need one board on USB to send the firmware (the **FOTA loader**). It can
+be any tag or anchor running 3.1.0 or newer. The board you update (the
+**target**) needs no cable.
+
+1. **Connect FOTA loader.** Plug the loader into USB and press **Scan USB**.
+   Pick it in the list. A battery-powered loader needs at least 30 %.
+2. **FOTA loader mode.** Press **Enable FOTA loader mode**. The loader stops its
+   normal work and its status LED blinks fast (on anchors: a battery-bar LED).
+3. **Choose firmware.** Pick a saved release, press **Download latest from
+   GitHub**, **Build new release...**, or **Browse .bin...**.
+4. **Find the target.** Press **Scan for targets**. Every board in UWB range
+   answers with its id, type, firmware and battery. Pick the one to update.
+   Boards on 3.1.0 don't answer a scan: type their id and press **Connect**.
+5. **Flash and verify.** Press **Start update** and wait for **Update OK**.
+   Then press **Leave FOTA loader mode** so the loader goes back to normal work.
+
+An update of about 120 KB takes roughly 12 seconds: 5 s countdown, under 1 s
+of data, then the target writes flash, reboots, and the loader checks it.
+
+### What protects the target
+
+- The target keeps running its current firmware while the image arrives. It
+  stores the image in RAM and writes flash only after the whole image has
+  arrived and its CRC matches.
+- If the radio link drops, the target gives up after 6 s and carries on with
+  its old firmware. Just retry.
+- Every chunk is acknowledged; lost chunks are resent.
+- After writing, the target reads the flash back and rewrites it (up to 3
+  times) if anything differs. The bootloader checks the CRC again at boot.
+- The loader asks the rebooted target for its CRC and reports **Update OK**
+  only if it matches the image.
+- A battery-powered target or loader refuses below 30 %. Boards on external
+  power report battery 255 and are always allowed.
+
+The one unrecoverable-over-the-air case is losing power during the few seconds
+of the flash write. The board then waits in its bootloader; flash it over USB
+(`htn_fw.py flash`) or with an ST-Link.
+
+### Data rate
+
+The handshake always uses the normal 110 kbps UWB setting that every board
+listens on. The data phase starts at 6.8 Mbps (fast, a few metres) and, if the
+link drops, retries at 850 kbps and then 110 kbps (slow, long range). The
+wizard's **Data rate** box can start lower.
+
+### LEDs
+
+| Board | LED | Meaning |
+|---|---|---|
+| Loader | status LED (anchor: battery-bar LED 0), fast blink | FOTA loader mode |
+| Loader | link LED (anchor: battery-bar LED 3), fast blink | sending data |
+| Target | status LED, slow blink | receiving an update |
+| Target | link LED, fast blink | data arriving |
+
+## Command line
+
+```bash
+$PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB0 status
+$PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB0 discover          # boards in UWB range
+$PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB0 query 6           # one board's version and CRC
+$PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB0 fota 6 releases/anchor/3.1.1/Anchor.bin
+$PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB0 fota-exit         # leave FOTA loader mode
+$PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB0 flash releases/tag/3.1.1/Tag.bin   # over USB
+```
+
+`--port` is the loader (for `fota`, `discover`, `query`) or the board itself
+(for `status`, `flash`). Stable port names are under `/dev/serial/by-id/`.
+`fota` options: `--rate 6m8|850k|110k` (starting rate), `--stay` (keep the
+loader in FOTA mode).
+
+`flash` uses the board's USB bootloader and works on any firmware version. It
+is how the first FOTA-capable firmware gets onto a board, and how the loader
+itself is updated.
+
+## Releases
+
+```bash
+$PY tools/htn_fota/fw_release.py list
+$PY tools/htn_fota/fw_release.py new anchor --part patch --note "what changed"   # bump + build + save
+$PY tools/htn_fota/fw_release.py build tag                                        # build + save, no bump
+$PY tools/htn_fota/fw_release.py fetch                                            # latest GitHub release
+```
+
+A release is saved under `releases/<anchor|tag>/<version>/` with the `.bin`,
+`.hex`, `.elf`, `.map` and a `manifest.json` (version, bootloader CRC, size,
+sha256, git commit, toolchain). `releases/` is not in git.
+
+On GitHub, every pull request to `main` builds both boards and fails if Anchor
+or Tag code changed without a version bump. Merging creates a release
+`fw-anc<ver>-tag<ver>` with the images; `fetch` and the wizard download it.
+
+## Troubleshooting
+
+| Symptom | What to do |
+|---|---|
+| Port missing, or `error -71` in `journalctl -k` | Replug the USB cable or try another one. |
+| `no STATUS reply` | Board off, asleep, or a bad cable. Tags sleep when idle: wake or power-cycle them. |
+| Board stopped answering on USB after a tool was opened at a wrong baud | Power-cycle it. These tools always use 921600; never open the port at another baud. |
+| Scan finds nothing | Target firmware older than 3.1.1, a tag asleep, or out of range. Try typing the id. |
+| `link lost` | Move the boards closer, or start at a lower data rate. |
+| `battery too low` | Charge the loader or the target above 30 %. |
+| `wrong device kind` | Anchor firmware picked for a tag or the reverse. |
+| Board stuck in the bootloader (`status` shows HW=255) | `htn_fw.py flash <image>` over USB. |
+
+## Firmware side
+
+The protocol and the target/loader logic are in `Anchor/Core/Src/fota.c` and
+`Anchor/Core/Inc/fota.h` (identical copies in `Tag/`). UART opcodes 0x40-0x49;
+0x4F is a DW1000 SPI self-test.
+
+LoRa wake-up for sleeping tags is not implemented yet: the wizard skips it, so
+a tag has to be awake (on USB, or ranging) to be updated.

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """HITAN FOTA wizard: step-by-step firmware update over the air.
 
-  python3 tools/fw_wizard.py
+  tools/htn_fota/.venv/bin/python tools/htn_fota/fw_wizard.py
+  (setup: python3 -m venv tools/htn_fota/.venv && tools/htn_fota/.venv/bin/pip install -r tools/htn_fota/requirements.txt)
 
 Steps:
   1. Connect the board that will be the FOTA loader (any tag or anchor) to USB.
