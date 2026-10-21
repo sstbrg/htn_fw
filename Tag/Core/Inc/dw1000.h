@@ -63,6 +63,9 @@ extern "C" {
 #define LINK_RESP_NO_LORA   0x01    // extended response byte 9 flags
 #define LINK_RESP_PENDING   0x02    //   a quieter LoRa request waits for its confirm
 #define LINK_RESP_MULTI     0x04    //   polls from two stations in the last 2 s: no adaptation (9K)
+#define LINK_RESP_LDE_NLOS  0x08    //   the tag's LDE runs the NLOS preset (9G)
+#define LINK_CTRL_LDE_NLOS  0x10    // extended poll ctrl: tag LDE to the NLOS preset; clear = LOS (9G)
+#define LINK_LDE_NLOS_CFG1  0x67    // NTM 7 / PMULT 3 (APS006 Pt 2); LOS is 0x6D
 #define LINK_MULTI_MS       2000    // a second station counts this long after its last poll
 #define LINK_LORA_KEEP      0x7F    // extended poll: no LoRa request; response: tag has no LoRa
 
@@ -93,7 +96,7 @@ typedef struct {			// extended poll: legacy bytes 0-9, then the request (9J hand
 		int8_t req_lora_dbm = LINK_LORA_KEEP;	// requested LoRa power, LINK_LORA_KEEP = no request
 		uint8_t req_uwb_level = 0;	// UWB level for the response to this poll (0 = maximum)
 		uint8_t confirm_seq = 0;	// confirms the acknowledged request, 0 = none
-		uint8_t profile_req = 0;	// 9H, always profile 0 for now
+		uint8_t ctrl = 0;			// bits 3..0 profile (9H, always 0), LINK_CTRL_LDE_NLOS (9G)
 		uint8_t crc0 = 0;
 		uint8_t crc1 = 0;
 } twr_anchor_ext_msg_t;

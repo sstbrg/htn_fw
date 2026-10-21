@@ -145,6 +145,9 @@ extern "C" {
  *				[fixed] bug list 2026-10-22: TIM4 true 1 ms tick (watchdog kept at 2.05 s); Error_Handler
  *				resets; LoRa DIO1 below TIM4; lost LoRa TX interrupt recovery; no_uwb not latched, bounded
  *				DW1000 re-init; wrap-safe LoRa wake wait.
+ *				[fixed] response timestamp uses the applied TX antenna delay (a calibrated TX delay had no
+ *				effect); Flash_Write invalidates ICACHE; [added] DW1000 crystal trim in flash (opcode 23).
+ *				[added] LDE preset from the anchor's extended poll (9G), LOS on a legacy poll / two stations / 1 s silence.
  */
 
 #define VERSION "tag3.2.0"

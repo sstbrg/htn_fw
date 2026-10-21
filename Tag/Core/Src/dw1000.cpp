@@ -11,6 +11,8 @@ static uint64 poll_rx_ts;
 static uint64 resp_tx_ts;
 static uint32 status_reg = 0;
 static uint8_t uwb_tx_level = 0;	// level in TX_POWER now; anything but a ranging response goes at 0
+static bool lde_nlos = false;		// 9G: LDE_CFG1 at the NLOS preset (the anchor asks in its extended poll)
+static uint32_t last_ext_tick = 0;	// last extended poll: without one for LINK_SILENCE_MS, back to LOS
 
 extern uint32_t _1ms_tick; //timer TIM4 1ms
 extern uint8_t HW_Version;
@@ -190,7 +192,8 @@ void dwConfig(dwt_config_t *config) {
 
 	#ifdef NEW_NTM
 		//set lower SNR for NLOS operation
-		dwt_write8bitoffsetreg(LDE_IF_ID, LDE_CFG1_OFFSET, 0x6D); //refer user manual pg.175
+		dwt_write8bitoffsetreg(LDE_IF_ID, LDE_CFG1_OFFSET, 0x6D); //refer user manual pg.175; LOS, the ground state
+		lde_nlos = false;
 		dwt_write16bitoffsetreg(LDE_IF_ID, LDE_CFG2_OFFSET, 0x0003); //refer user manual pg.177*/
 		//printf("0x2E = %x\n\r",dwt_read32bitreg(LDE_IF_ID));
 	#endif
@@ -249,11 +252,17 @@ void dwApplyXtalTrim(void) {
 		dwt_setxtaltrim((uint8_t)t);
 }
 
+// TX antenna delay in force. A delayed response computes its own TX timestamp (programmed time +
+// this), so it must be the applied value: with the compile-time default a calibrated TX delay had
+// no effect on the range.
+static uint16_t tx_ant_dly = TX_ANT_DLY;
+
 // Antenna delays: self-id flash page slots 1 (TX) and 2 (RX); 0 or 0xFFFF = not calibrated
 void dwApplyAntennaDelays(void) {
 	const uint16_t *page = (const uint16_t*)FLASH_SELF_ID_ADDRESS;
 	uint16_t tx = page[1], rx = page[2];
-	dwt_settxantennadelay((tx == 0 || tx == 0xFFFF) ? TX_ANT_DLY : tx);
+	tx_ant_dly = (tx == 0 || tx == 0xFFFF) ? TX_ANT_DLY : tx;
+	dwt_settxantennadelay(tx_ant_dly);
 	dwt_setrxantennadelay((rx == 0 || rx == 0xFFFF) ? RX_ANT_DLY : rx);
 }
 
@@ -266,6 +275,16 @@ void dwApplyAntennaDelays(void) {
 	#define DBG_ON
 	#define DBG_OFF
 #endif // TIMING_TESTS_USING_LED_GPIO
+
+// 9G: LDE_CFG1 to the NLOS preset or back to LOS. Written while idle (between the response and the
+// next RX enable); the RX reset makes LDE start clean with it.
+static void dwSetLde(bool nlos) {
+	if (nlos == lde_nlos)
+		return;
+	dwt_write8bitoffsetreg(LDE_IF_ID, LDE_CFG1_OFFSET, nlos ? LINK_LDE_NLOS_CFG1 : 0x6D);
+	dwt_rxreset();	// poll timestamp already read; the next RX starts LDE clean
+	lde_nlos = nlos;
+}
 
 /* 9K: polls from two stations (PC ids) in the last LINK_MULTI_MS mean no adaptation. */
 static uint16_t seen_pc[2] = {0xFFFF, 0xFFFF};
@@ -288,6 +307,8 @@ static bool dwNotePoll(uint16_t src) {
 }
 
 int dwRange(void) {
+	if (lde_nlos && HAL_GetTick() - last_ext_tick > LINK_SILENCE_MS)
+		dwSetLde(false);	// no anchor is steering it any more: LOS
 	/* Activate reception immediately. */
 
 	tx_resp_msg.tag_no_lora = lora_rxInfo.no_lora;
@@ -375,7 +396,7 @@ int dwRange(void) {
 
 			/* Response TX timestamp is the transmission time we programmed plus the antenna delay. */
 			resp_tx_ts = (((uint64) (resp_tx_time & 0xFFFFFFFEUL)) << 8)
-					+ TX_ANT_DLY;
+					+ tx_ant_dly;	// the delay applied by dwApplyAntennaDelays()
 
 			tx_resp_msg.msd_index = rx_buffer.msd_index;//return the same message index
 
@@ -386,7 +407,11 @@ int dwRange(void) {
 			/* Link adaptation (doc section 9). A legacy poll means maximum, always; an extended
 			 * poll carries this response's UWB level and the owner anchor's LoRa request. */
 			if (ext) {
+				last_ext_tick = HAL_GetTick();
+				dwSetLde(!multi && (rx_buffer.ctrl & LINK_CTRL_LDE_NLOS));	// takes effect for the next poll
 				uint8_t flags = lora_rxInfo.no_lora ? LINK_RESP_NO_LORA : 0;
+				if (lde_nlos)
+					flags |= LINK_RESP_LDE_NLOS;
 				dwSetTxLevel(multi ? 0 : rx_buffer.req_uwb_level);
 				uint8_t ack = Lora_LinkRequest(rx_buffer.src, rx_buffer.seq, rx_buffer.req_lora_dbm,
 						rx_buffer.confirm_seq, multi);
@@ -404,6 +429,7 @@ int dwRange(void) {
 				dwt_writetxfctrl(sizeof(tx_resp_ext), 0, 1);
 			} else {
 				dwSetTxLevel(0);
+				dwSetLde(false);	// a legacy poll means the ground state
 				Lora_LinkMax();
 				tx_resp_msg.tag_no_lora = lora_rxInfo.no_lora;
 				if (rx_buffer.i9 == LINK_HELLO)	// a new anchor asks: say we can do extended frames

@@ -45,6 +45,7 @@ extern "C"
 #define LINK_STATE_PENDING	0x04	// a LoRa step is in its handshake
 #define LINK_STATE_REVERT	0x08	// switched off: asking for maximum
 #define LINK_STATE_COEXIST	0x10	// two stations or backoff armed: adaptation frozen (9K)
+#define LINK_STATE_TAG_NLOS	0x20	// the tag reports its NLOS LDE preset (9G)
 
 #pragma pack (1)
 typedef struct

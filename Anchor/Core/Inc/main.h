@@ -157,6 +157,9 @@ extern "C" {
  * 				bytes read as old ticks); Error_Handler resets; LoRa DIO1 below TIM4 and Lora_Status masks
  * 				only DIO1; lost LoRa TX/RX interrupt recovery; rxError consumed; no_uwb not latched, bounded
  * 				DW1000 re-init; wrap-safe backoff deadlines.
+ * 				[fixed] imposter response timestamp uses the applied TX antenna delay (was the default);
+ * 				[added] DW1000 crystal trim in flash (opcode 23); 9F/9G only above -90 dBm.
+ * 				[added] 9G preset sent to the tag in the extended poll; extended frames also with 9G alone.
  */
 
 #define VERSION "anc3.2.0"
@@ -340,6 +343,7 @@ typedef struct {
     uint8_t  echo_uwb_level;
     uint8_t  echo_profile;
     uint8_t  echo_pending;
+    uint8_t  echo_lde_nlos; // the tag runs the NLOS LDE preset
     uint32_t last_uwb_tick;
     uint32_t last_lora_tick;
     // 9F / 9G

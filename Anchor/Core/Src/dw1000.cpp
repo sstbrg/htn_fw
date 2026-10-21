@@ -67,11 +67,17 @@ void dwApplyXtalTrim(void) {
 		dwt_setxtaltrim((uint8_t)t);
 }
 
+// TX antenna delay in force. A delayed response computes its own TX timestamp (programmed time +
+// this), so it must be the applied value: with the compile-time default a calibrated TX delay had
+// no effect on the range.
+static uint16_t tx_ant_dly = TX_ANT_DLY;
+
 // Antenna delays: self-id flash page slots 1 (TX) and 2 (RX); 0 or 0xFFFF = not calibrated
 void dwApplyAntennaDelays(void) {
 	const uint16_t *page = (const uint16_t*)FLASH_SELF_ID_ADDRESS;
 	uint16_t tx = page[1], rx = page[2];
-	dwt_settxantennadelay((tx == 0 || tx == 0xFFFF) ? TX_ANT_DLY : tx);
+	tx_ant_dly = (tx == 0 || tx == 0xFFFF) ? TX_ANT_DLY : tx;
+	dwt_settxantennadelay(tx_ant_dly);
 	dwt_setrxantennadelay((rx == 0 || rx == 0xFFFF) ? RX_ANT_DLY : rx);
 }
 
@@ -602,6 +608,7 @@ static void link_reset(void) {
 	link_st.echo_uwb_level = LINK_UWB_UNKNOWN;
 	link_st.echo_profile = 0xFF;
 	link_st.echo_pending = 0;
+	link_st.echo_lde_nlos = 0;
 }
 
 // Give up on extended frames for a while.
@@ -651,10 +658,15 @@ void Link_Init(void) {
 	link_st.coexist_tick = HAL_GetTick() - LINK_MULTI_MS;
 }
 
+// Extended frames carry the tag's TX power (9D) and LDE preset (9G).
+static bool link_wants_ext(void) {
+	return (link_cfg.features & (LINK_F_POWER | LINK_F_LDE_AUTO)) != 0;
+}
+
 bool Link_WantHello(void) {
 	if (link_st.ext_hold && HAL_GetTick() - link_st.ext_hold_tick >= LINK_EXT_HOLD_MS)
 		link_st.ext_hold = 0;
-	return (link_cfg.features & LINK_F_POWER) && !link_st.ext_hold;
+	return link_wants_ext() && !link_st.ext_hold;
 }
 
 void Link_BeforePoll(void) {
@@ -680,7 +692,9 @@ void Link_BeforePoll(void) {
 }
 
 void Link_FillExtPoll(twr_anchor_ext_msg_t *p) {
-	p->profile_req = 0;
+	// 9G for the tag too: the channel is reciprocal, so the preset this anchor chose from the
+	// response also suits the tag's reception of the poll
+	p->ctrl = ((link_cfg.features & LINK_F_LDE_AUTO) && link_st.lde_nlos && !link_st.reverting) ? LINK_CTRL_LDE_NLOS : 0;
 	p->confirm_seq = 0;
 	if (link_st.reverting) {
 		if (++link_st.revert_tries > LINK_TRIES) {	// legacy polls put a new tag at maximum anyway
@@ -758,6 +772,7 @@ void Link_OnResponse(const twr_tag_ext_msg_t *r, bool ext_poll, bool ext_resp, b
 	link_st.echo_uwb_level = r->uwb_level;
 	link_st.echo_profile = r->profile_used;
 	link_st.echo_pending = (r->tag_no_lora & LINK_RESP_PENDING) != 0;
+	link_st.echo_lde_nlos = (r->tag_no_lora & LINK_RESP_LDE_NLOS) != 0;
 	link_st.last_uwb_tick = now;
 	link_st.ext_miss = 0;
 	if (r->tag_no_lora & LINK_RESP_MULTI) {	// 9K: a second station appeared; the tag is at maximum already
@@ -786,8 +801,8 @@ void Link_OnResponse(const twr_tag_ext_msg_t *r, bool ext_poll, bool ext_resp, b
 	}
 
 	if (link_st.reverting) {
-		if ((no_lora || r->lora_dbm == LINK_LORA_MAX_DBM) && r->uwb_level == 0)
-			link_reset();	// the tag is at maximum: back to legacy polls
+		if ((no_lora || r->lora_dbm == LINK_LORA_MAX_DBM) && r->uwb_level == 0 && !link_st.echo_lde_nlos)
+			link_reset();	// the tag is back on its defaults: legacy polls
 		return;
 	}
 	if (!link_lora_active() || no_lora)
@@ -965,12 +980,18 @@ void Link_SetConfig(const uint8_t *cfg, uint8_t len) {
 
 	uint8_t was = link_cfg.features;
 	link_cfg = c;
-	if ((was & LINK_F_POWER) && !(c.features & LINK_F_POWER) && link_st.ext) {
-		// off means revert: ask for maximum until the tag shows it, then legacy polls
+	if (link_st.ext && !link_wants_ext()) {
+		// off means revert: ask for maximum and LOS until the tag shows it, then legacy polls
 		link_st.reverting = 1;
 		link_st.revert_tries = 0;
 		link_st.uwb_level = link_st.uwb_prev = 0;
 		link_next_seq();
+	} else if ((was & LINK_F_POWER) && !(c.features & LINK_F_POWER)) {
+		// 9G stays on, frames stay extended: UWB back to maximum now; LoRa requests stop, so the
+		// tag returns to maximum by itself within LINK_SILENCE_MS
+		link_st.uwb_level = link_st.uwb_prev = 0;
+		link_st.lora_phase = LINK_LP_IDLE;
+		link_st.lora_cur = link_st.lora_req = LINK_LORA_MAX_DBM;
 	}
 	if (!c.lora_owner && link_st.lora_phase != LINK_LP_IDLE) {
 		link_st.lora_phase = LINK_LP_IDLE;	// the tag falls back by itself without owner polls
@@ -1043,7 +1064,7 @@ void Link_SetConfig(const uint8_t *cfg, uint8_t len) {
 
 			/* Response TX timestamp is the transmission time we programmed plus the antenna delay. */
 			resp_tx_ts = (((uint64) (resp_tx_time & 0xFFFFFFFEUL)) << 8)
-					+ TX_ANT_DLY;
+					+ tx_ant_dly;	// the delay applied by dwApplyAntennaDelays()
 
            	tx_resp_msg.msd_index = rx_buffer.msd_index;//return the same message index
 
