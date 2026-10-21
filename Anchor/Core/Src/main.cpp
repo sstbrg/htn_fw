@@ -39,6 +39,7 @@
 #include "Led.h"
 #include "flash_handler.h"
 #include "burn_mode.h"
+#include "fota.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -229,6 +230,7 @@ int main(void)
 	S_UART_MESSAGE reply = { 0 };
 	while (1) {
 		refresh_WD();
+		fota_poll();
 
 		uint8_t RxLen = UART_GetMessage((uint8_t*) &msg, sizeof(msg));
 		if ((RxLen != RX_EMPTY) && Validate_UART(&msg, RxLen)) {
@@ -397,11 +399,12 @@ int main(void)
 			}
 
   			default:
-  				UART_Reply_error(&msg, &reply);
+  				if (!fota_uart_command((uint8_t*) &msg, RxLen))
+  					UART_Reply_error(&msg, &reply);
   				break;
   			}
   		}
-  		else if(!dwmInfo.no_uwb){
+  		else if(!dwmInfo.no_uwb && !fota_busy()){
   			if(dwmInfo.tag_imposter){
   				dwTagMode();
   			}else{
