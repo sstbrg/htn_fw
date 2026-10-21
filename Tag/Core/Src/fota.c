@@ -19,10 +19,14 @@
 #define FOTA_VERIFY_DELAY_MS	5000	// target erases, writes, verifies and reboots
 #define FOTA_VERIFY_TIMEOUT_MS	20000
 #define FOTA_LINK_TIMEOUT_MS	3000	// no DATA_ACK for this long -> fall back to HELLO
-#define FOTA_SESSION_TRIES		3
+#define FOTA_SESSION_TRIES		4		// 6.8M, 850k, 110k, 110k
 #define FOTA_COMMIT_TRIES		10
 #define FOTA_FAST_BLINK_MS		50
 #define FOTA_SLOW_BLINK_MS		500
+#define FOTA_DISCOVER_ROUNDS	3
+#define FOTA_DISCOVER_SLOTS		16		// a target answers in one random slot
+#define FOTA_DISCOVER_SLOT_MS	20
+#define FOTA_DISCOVER_WINDOW_MS	(FOTA_DISCOVER_SLOTS * FOTA_DISCOVER_SLOT_MS + 80)
 
 /* Data-phase UWB settings. Channel, PRF and preamble code match the normal
  * ranging config; extended PHR allows frames up to 1023 bytes. */
@@ -78,7 +82,24 @@ static struct {
 	uint32_t t_led;
 	uint8_t led_on;
 	fota_hello_ack_t tinfo;
+	uint8_t ndisc;
+	uint8_t disc_round;
+	uint8_t disc_prev_state;
+	fota_disc_entry_t disc[FOTA_DISCOVER_MAX];
 } fl;
+
+static uint32_t rnd_state;
+
+static uint32_t rnd(void)
+{
+	rnd_state = rnd_state * 1664525u + 1013904223u + HAL_GetTick() + fota_port_self_addr();
+	return rnd_state >> 16;
+}
+
+static int battery_ok(uint8_t b)
+{
+	return b == 0xFF || b >= FOTA_MIN_BATTERY;
+}
 
 /* ---------------- helpers ---------------- */
 
@@ -268,9 +289,16 @@ static void ram_flash_and_reset(const uint32_t *src, uint32_t nwords, uint32_t c
 
 /* ---------------- target ---------------- */
 
+static void target_reply_info(uint8_t type, uint16_t des, uint16_t session, uint8_t status, uint16_t countdown);
+
 static void target_reply_hello(uint16_t des, uint16_t session, uint8_t status, uint16_t countdown)
 {
-	fota_hello_ack_t *a = (fota_hello_ack_t *)frame_begin(des, FOTA_HELLO_ACK, session);
+	target_reply_info(FOTA_HELLO_ACK, des, session, status, countdown);
+}
+
+static void target_reply_info(uint8_t type, uint16_t des, uint16_t session, uint8_t status, uint16_t countdown)
+{
+	fota_hello_ack_t *a = (fota_hello_ack_t *)frame_begin(des, type, session);
 	memset(a, 0, sizeof(*a));
 	a->status = status;
 	a->countdown_ms = countdown;
@@ -290,6 +318,15 @@ void fota_uwb_rx(uint32_t frame_len)
 		return;
 	dwt_readrxdata(rxf, frame_len - 2, 0);
 	const fota_hdr_t *h = (const fota_hdr_t *)rxf;
+	if (h->type == FOTA_DISCOVER && h->des == FOTA_BROADCAST) {
+		// answer in a random slot so several targets don't collide
+		uint16_t src = h->src, session = h->session;
+		uint32_t t0 = HAL_GetTick(), wait = (rnd() % FOTA_DISCOVER_SLOTS) * FOTA_DISCOVER_SLOT_MS;
+		while (HAL_GetTick() - t0 < wait)
+			fota_port_kick_wd();
+		target_reply_info(FOTA_DISCOVER_ACK, src, session, FOTA_OK, 0);
+		return;
+	}
 	if (h->des != fota_port_self_addr() || h->type != FOTA_HELLO
 			|| frame_len - 2 < sizeof(fota_hdr_t) + sizeof(fota_hello_t))
 		return;
@@ -310,6 +347,8 @@ void fota_uwb_rx(uint32_t frame_len)
 		status = FOTA_ERR_SIZE;
 	else if (hello.rate >= FOTA_RATE_NUM)
 		status = FOTA_ERR_RATE;
+	else if (!battery_ok(fota_port_battery()))
+		status = FOTA_ERR_BATTERY;
 	else if (tg.state == T_ARMED && (session != tg.session || src != tg.peer))
 		status = FOTA_ERR_BUSY;
 	if (status != FOTA_OK) {
@@ -514,6 +553,8 @@ static void flasher_step(void)
 				if (++fl.sessions >= FOTA_SESSION_TRIES) {
 					flasher_fail(FOTA_ERR_LINK);
 				} else {
+					if (fl.rate > FOTA_RATE_110K)
+						fl.rate--;		// slower and longer range; the next HELLO tells the target
 					fl.session++;
 					flasher_set(FL_HELLO);
 				}
@@ -564,6 +605,43 @@ static void flasher_step(void)
 		}
 		break;
 
+	case FL_DISCOVER: {
+		frame_begin(FOTA_BROADCAST, FOTA_DISCOVER, fl.session);
+		uwb_send(sizeof(fota_hdr_t), 1);
+		uint32_t t0 = HAL_GetTick();
+		for (;;) {
+			uint32_t elapsed = HAL_GetTick() - t0;
+			if (elapsed >= FOTA_DISCOVER_WINDOW_MS)
+				break;
+			fota_port_kick_wd();
+			int n = uwb_wait_rx(FOTA_DISCOVER_WINDOW_MS - elapsed);
+			const fota_hello_ack_t *a = (const fota_hello_ack_t *)rx_payload(n, FOTA_DISCOVER_ACK, fl.session, sizeof(fota_hello_ack_t));
+			if (a) {
+				uint16_t id = ((const fota_hdr_t *)rxf)->src;
+				uint8_t i;
+				for (i = 0; i < fl.ndisc && fl.disc[i].id != id; i++) {
+				}
+				if (i == fl.ndisc && fl.ndisc < FOTA_DISCOVER_MAX)
+					fl.ndisc++;
+				if (i < FOTA_DISCOVER_MAX) {
+					fl.disc[i].id = id;
+					fl.disc[i].kind = a->kind;
+					fl.disc[i].hw = a->hw;
+					fl.disc[i].battery = a->battery;
+					memcpy(fl.disc[i].sw, a->sw, sizeof(fl.disc[i].sw));
+					fl.disc[i].app_crc = a->app_crc;
+				}
+			}
+			if (n != 0)
+				dwt_rxenable(DWT_START_RX_IMMEDIATE);	// keep listening for more answers
+		}
+		if (++fl.disc_round >= FOTA_DISCOVER_ROUNDS) {
+			fl.state = fl.disc_prev_state;
+			fl.t_state = now;
+		}
+		break;
+	}
+
 	case FL_QUERY:
 		fl.t_valid = 0;
 		flasher_hello(fl.query_target, FOTA_HELLO_QUERY);
@@ -591,7 +669,7 @@ static void flasher_leds(void)
 
 static int flasher_in_session(void)
 {
-	return fl.state >= FL_HELLO && fl.state <= FL_QUERY;
+	return fl.state >= FL_HELLO && fl.state <= FL_DISCOVER;
 }
 
 /* ---------------- public ---------------- */
@@ -612,7 +690,7 @@ int fota_busy(void)
 	return fl.mode;
 }
 
-static uint8_t urep[96];
+static uint8_t urep[256];
 
 static void uart_reply(uint8_t opcode, const void *payload, uint8_t len)
 {
@@ -662,7 +740,7 @@ int fota_uart_command(const uint8_t *msg, uint8_t len)
 		uart_reply(op, r, sizeof(r));
 		return 1;
 	}
-	if (op < UART_OPCODE_FOTA_ENTER || op > UART_OPCODE_FOTA_EXIT)
+	if (op < UART_OPCODE_FOTA_ENTER || op > UART_OPCODE_FOTA_DISCOVER_LIST)
 		return 0;
 
 	if (op == UART_OPCODE_FOTA_STATUS) {
@@ -782,6 +860,10 @@ int fota_uart_command(const uint8_t *msg, uint8_t len)
 			uart_status(op, FOTA_ERR_STATE);
 			break;
 		}
+		if (!battery_ok(fota_port_battery())) {
+			uart_status(op, FOTA_ERR_BATTERY);
+			break;
+		}
 		fl.session = (uint16_t)(now ^ ((uint32_t)fota_port_self_addr() << 8)) | 1u;
 		fl.acked = 0;
 		fl.retries = 0;
@@ -805,6 +887,33 @@ int fota_uart_command(const uint8_t *msg, uint8_t len)
 		flasher_set(FL_QUERY);
 		uart_status(op, FOTA_OK);
 		break;
+
+	case UART_OPCODE_FOTA_DISCOVER:
+		if (flasher_in_session()) {
+			uart_status(op, FOTA_ERR_BUSY);
+			break;
+		}
+		fl.ndisc = 0;
+		fl.disc_round = 0;
+		fl.disc_prev_state = fl.state;
+		fl.session = (uint16_t)(rnd() | 1u);
+		flasher_set(FL_DISCOVER);
+		uart_status(op, FOTA_OK);
+		break;
+
+	case UART_OPCODE_FOTA_DISCOVER_LIST: {
+		static uint8_t r[3 + 10 * sizeof(fota_disc_entry_t)];
+		uint8_t start = plen ? p[0] : 0, count = 0;
+		while (count < 10 && start + count < fl.ndisc) {
+			memcpy(&r[3 + count * sizeof(fota_disc_entry_t)], &fl.disc[start + count], sizeof(fota_disc_entry_t));
+			count++;
+		}
+		r[0] = fl.ndisc;
+		r[1] = start;
+		r[2] = count;
+		uart_reply(op, r, (uint8_t)(3 + count * sizeof(fota_disc_entry_t)));
+		break;
+	}
 
 	case UART_OPCODE_FOTA_ABORT:
 		if (flasher_in_session()) {

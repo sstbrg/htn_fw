@@ -28,7 +28,9 @@ import htn_fw
 
 MIN_BATTERY = 30        # % for battery-powered boards (tags); anchors report 255 = mains
 KIND_NAME = {0: "anchor", 1: "tag"}
-RATE_NAMES = {"6.8 Mbps (fast, short range)": "6m8", "850 kbps": "850k", "110 kbps (long range)": "110k"}
+RATE_NAMES = {"Auto: 6.8 Mbps, slower if the link drops": "6m8",
+              "Auto from 850 kbps": "850k",
+              "110 kbps only (longest range)": "110k"}
 
 
 def probe(port):
@@ -453,36 +455,80 @@ class Wizard(tk.Tk):
     def step_target(self):
         r = self.release
         self.clear_body("Find the target",
-                        f"Enter the id of the {r['kind']} to update (its Status self_id). The loader first tries to "
-                        "wake it over LoRa, then talks to it over UWB. Keep the target within UWB range "
-                        "(a few metres for 6.8 Mbps).")
+                        f"Press Scan: the loader wakes targets over LoRa, then asks every board in UWB range to "
+                        f"report. Pick the {r['kind']} to update. (Boards need 3.1.1+ to answer a scan; for older "
+                        "3.1.0 boards type the id below.)")
+        cols = ("id", "kind", "firmware", "hw", "battery", "crc")
+        self.tgt_tree = ttk.Treeview(self.body, columns=cols, show="headings", height=7, selectmode="browse")
+        for c, w in zip(cols, (60, 70, 110, 50, 80, 110)):
+            self.tgt_tree.heading(c, text=c.upper() if c in ("id", "hw", "crc") else c.capitalize())
+            self.tgt_tree.column(c, width=w, anchor="w")
+        self.tgt_tree.pack(fill="both", expand=True)
+        self.tgt_tree.bind("<<TreeviewSelect>>", self.on_pick_target)
         row = ttk.Frame(self.body)
-        row.pack(fill="x", pady=4)
-        ttk.Label(row, text="Target id:").pack(side="left")
+        row.pack(fill="x", pady=6)
+        ttk.Button(row, text="Scan for targets", style="Big.TButton", command=self.scan_targets).pack(side="left")
+        ttk.Label(row, text="or id:").pack(side="left", padx=(16, 4))
         self.tid = tk.StringVar(value=str(getattr(self, "target_id", "")))
-        ttk.Entry(row, textvariable=self.tid, width=8).pack(side="left", padx=6)
-        ttk.Label(row, text="Data rate:").pack(side="left", padx=(16, 0))
+        ttk.Entry(row, textvariable=self.tid, width=7).pack(side="left")
+        ttk.Button(row, text="Connect", command=self.connect_target).pack(side="left", padx=6)
+        row2 = ttk.Frame(self.body)
+        row2.pack(fill="x", pady=4)
+        ttk.Label(row2, text="Data rate:").pack(side="left")
         self.rate = tk.StringVar(value=next(iter(RATE_NAMES)))
-        ttk.Combobox(row, textvariable=self.rate, values=list(RATE_NAMES), state="readonly", width=26).pack(side="left", padx=6)
-        ttk.Button(self.body, text="Connect to target", style="Big.TButton", command=self.connect_target).pack(anchor="w", pady=8)
+        ttk.Combobox(row2, textvariable=self.rate, values=list(RATE_NAMES), state="readonly", width=40).pack(side="left", padx=6)
         self.tinfo = ttk.Label(self.body, text="", justify="left", font=("TkFixedFont", 10))
         self.tinfo.pack(anchor="w", pady=6)
+        self.found = {}
+
+    def scan_targets(self):
+        port = self.loader["port"]
+
+        def job():
+            self.progress(10, "LoRa wake-up...")
+            self.log("LoRa wake-up: not in the firmware yet, skipping (anchors don't sleep; a tag must be awake)",
+                     "warn")
+            self.progress(40, "UWB scan...")
+            with serial.Serial(port, htn_fw.BAUD, timeout=0.05) as ser:
+                return htn_fw.fota_discover(ser)
+
+        def done(found):
+            self.progress(0, "idle")
+            self.tgt_tree.delete(*self.tgt_tree.get_children())
+            self.found = {}
+            want = self.release["kind"]
+            for d in sorted(found, key=lambda d: (d["kind"] != want, d["id"])):
+                batt = "mains" if d["battery"] == 255 else f"{d['battery']}%"
+                iid = self.tgt_tree.insert("", "end", values=(d["id"], d["kind"], d["sw"], d["hw"], batt,
+                                                              f"0x{d['app_crc']:08x}"))
+                self.found[iid] = d
+            self.log(f"scan: {len(found)} board(s) answered" if found else
+                     "scan: nobody answered (boards need 3.1.1+, tags must be awake, check distance)",
+                     "ok" if found else "warn")
+            same_kind = [iid for iid, d in self.found.items() if d["kind"] == want]
+            if len(same_kind) == 1:
+                self.tgt_tree.selection_set(same_kind[0])
+        self.run(job, done)
+
+    def on_pick_target(self, _e=None):
+        sel = self.tgt_tree.selection()
+        if sel:
+            self.tid.set(str(self.found[sel[0]]["id"]))
+            self.connect_target()
 
     def connect_target(self):
         try:
             tid = int(self.tid.get())
         except ValueError:
-            messagebox.showerror("Target id", "Enter the target's numeric id.")
+            messagebox.showerror("Target id", "Scan for targets, or enter the target's numeric id.")
             return
         self.target = None
+        self.update_nav()
         port = self.loader["port"]
         want_kind = self.release["kind"]
 
         def job():
-            self.progress(10, "LoRa wake-up...")
-            self.log("LoRa wake-up: not in firmware 3.1.0 yet, skipping (anchors don't sleep; a tag must be awake)",
-                     "warn")
-            self.progress(40, "UWB handshake...")
+            self.progress(40, f"UWB handshake with {tid}...")
             with serial.Serial(port, htn_fw.BAUD, timeout=0.05) as ser:
                 for attempt in range(3):
                     s = htn_fw.fota_query(ser, tid)
@@ -513,6 +559,7 @@ class Wizard(tk.Tk):
             self.log(f"target {kind} {tid}: {s['t_sw']}, battery {batt}", "ok")
             self.target_id = tid
             self.target = s
+            self.update_nav()
         self.run(job, done)
 
     # ---------------- step 5 ----------------
@@ -558,7 +605,8 @@ class Wizard(tk.Tk):
                                   "verify": "asking the rebooted target for its CRC..."}.get(state, state))
                     if state == "data":
                         pct = 25 + 65 * st["acked"] / max(1, st["size"])
-                        self.progress(pct, f"UWB: {st['acked']}/{st['size']} B, {st['retries']} resent")
+                        self.progress(pct, f"UWB {htn_fw.RATE_NAME.get(st['rate'], '?')}: "
+                                           f"{st['acked']}/{st['size']} B, {st['retries']} resent")
                     elif state in phase_pct:
                         self.progress(phase_pct[state], state)
                 s = htn_fw.fota_run(ser, on_status)
