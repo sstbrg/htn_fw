@@ -95,8 +95,8 @@ all: main-build
 main-build: Anchor.elf secondary-outputs
 
 # Tool invocations
-Anchor.elf Anchor.map: $(OBJS) $(USER_OBJS) C:\projects\HITAN_reut\hitan-stm-reut\Anchor\STM32U5A5ZJTXQ_FLASH_MMT_TEMPLATE.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-g++ -o "Anchor.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m33 -T"C:\projects\HITAN_reut\hitan-stm-reut\Anchor\STM32U5A5ZJTXQ_FLASH_MMT_TEMPLATE.ld" -Wl,-Map="Anchor.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv5-sp-d16 -mfloat-abi=hard -mthumb -u _printf_float -Wl,--start-group -lc -lm -lstdc++ -lsupc++ -Wl,--end-group
+Anchor.elf Anchor.map: $(OBJS) $(USER_OBJS) ../STM32U5A5ZJTXQ_FLASH_MMT_TEMPLATE.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-g++ -o "Anchor.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m33 -T"../STM32U5A5ZJTXQ_FLASH_MMT_TEMPLATE.ld" -Wl,-Map="Anchor.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv5-sp-d16 -mfloat-abi=hard -mthumb -u _printf_float -Wl,--start-group -lc -lm -lstdc++ -lsupc++ -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 

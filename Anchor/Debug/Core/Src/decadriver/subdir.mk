@@ -19,7 +19,7 @@ OBJS += \
 
 # Each subdirectory must supply rules for building sources it contributes
 Core/Src/decadriver/%.o Core/Src/decadriver/%.su Core/Src/decadriver/%.cyclo: ../Core/Src/decadriver/%.c Core/Src/decadriver/subdir.mk
-	arm-none-eabi-gcc "$<" -mcpu=cortex-m33 -std=gnu11 -g3 -DDEBUG -DUSE_HAL_DRIVER -DSTM32U5A5xx -DUSE_NUCLEO_64 -c -I../Core/Inc -I../Drivers/STM32U5xx_HAL_Driver/Inc -I../Drivers/STM32U5xx_HAL_Driver/Inc/Legacy -I../Drivers/CMSIS/Device/ST/STM32U5xx/Include -I../Drivers/CMSIS/Include -I"C:/projects/HITAN_reut/hitan-stm-reut/Anchor/Core/Inc/platform" -I"C:/projects/HITAN_reut/hitan-stm-reut/Anchor/Core/Inc/decadriver" -I"C:/projects/HITAN_reut/hitan-stm-reut/Anchor/Core/Src/platform" -I"C:/projects/HITAN_reut/hitan-stm-reut/Anchor/Core/Src/decadriver" -I../Drivers/BSP/STM32U5xx_Nucleo -O0 -ffunction-sections -fdata-sections -Wall -fstack-usage -fcyclomatic-complexity -MMD -MP -MF"$(@:%.o=%.d)" -MT"$@" --specs=nano.specs -mfpu=fpv5-sp-d16 -mfloat-abi=hard -mthumb -o "$@"
+	arm-none-eabi-gcc "$<" -mcpu=cortex-m33 -std=gnu11 -g3 -DDEBUG -DUSE_HAL_DRIVER -DSTM32U5A5xx -DUSE_NUCLEO_64 -c -I../Core/Inc -I../Drivers/STM32U5xx_HAL_Driver/Inc -I../Drivers/STM32U5xx_HAL_Driver/Inc/Legacy -I../Drivers/CMSIS/Device/ST/STM32U5xx/Include -I../Drivers/CMSIS/Include -I"../Core/Inc/platform" -I"../Core/Inc/decadriver" -I"../Core/Src/platform" -I"../Core/Src/decadriver" -I../Drivers/BSP/STM32U5xx_Nucleo -O0 -ffunction-sections -fdata-sections -Wall -fstack-usage -MMD -MP -MF"$(@:%.o=%.d)" -MT"$@" --specs=nano.specs -mfpu=fpv5-sp-d16 -mfloat-abi=hard -mthumb -o "$@"
 
 clean: clean-Core-2f-Src-2f-decadriver
 
