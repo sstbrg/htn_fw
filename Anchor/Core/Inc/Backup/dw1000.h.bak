@@ -241,7 +241,7 @@ static uint32 status_reg = 0;
 
 #else
 	#define TIMEOUT_PACS (2048/64*4)//(config->txPreambLength / config->rxPAC) * 2 = preamble timeot duration of 2 full preabmles
-	#define RESP_RX_TIMEOUT_UUS 25000  //claude code
+	#define RESP_RX_TIMEOUT_UUS 25000
 //	#define RESP_RX_TIMEOUT_UUS 10000  //preamble 1024
 //	#define RESP_RX_TIMEOUT_UUS 6000  //preamble 1024
 #endif
