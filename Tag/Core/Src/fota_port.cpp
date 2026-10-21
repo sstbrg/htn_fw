@@ -46,6 +46,11 @@ extern "C" void fota_port_link_led(int on)
 	Link_Led(on ? GREEN : OFF);
 }
 
+extern "C" int fota_port_led_set(uint8_t idx, int on)
+{
+	return Led_Set(idx, on);
+}
+
 extern "C" void fota_port_uwb_restore(void)
 {
 	dwt_forcetrxoff();

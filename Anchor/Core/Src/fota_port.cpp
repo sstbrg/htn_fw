@@ -20,6 +20,7 @@ extern uint8_t HW_Version;
 // In Led.cpp: battery-bar LEDs, unused on anchors, so status/link keep their normal meaning
 void Fota_Status_Led(int on);
 void Fota_Link_Led(int on);
+int Led_Set(int idx, int on);
 
 extern "C" uint16_t fota_port_self_addr(void)
 {
@@ -49,6 +50,11 @@ extern "C" void fota_port_status_led(int on)
 extern "C" void fota_port_link_led(int on)
 {
 	Fota_Link_Led(on);
+}
+
+extern "C" int fota_port_led_set(uint8_t idx, int on)
+{
+	return Led_Set(idx, on);
 }
 
 extern "C" void fota_port_uwb_restore(void)

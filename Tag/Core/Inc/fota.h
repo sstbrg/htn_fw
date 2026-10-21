@@ -24,8 +24,9 @@
  * so a dropped link leaves the running firmware untouched.
  *
  * LEDs: flasher mode = status LED blinks fast, link LED blinks fast while
- * data is sent. Target receiving = status LED blinks slowly, link LED blinks
- * fast while data is received.
+ * data moves (PC -> loader RAM, and over UWB). Target: status LED blinks
+ * slowly from the accepted handshake (countdown) through the transfer, link
+ * LED blinks fast while data is received, both on while flash is written.
  */
 
 #ifndef INC_FOTA_H_
@@ -48,6 +49,7 @@ extern "C" {
 #define UART_OPCODE_FOTA_EXIT		0x47	// leave FOTA flasher mode (back to normal operation)
 #define UART_OPCODE_FOTA_DISCOVER	0x48	// find FOTA targets in UWB range (broadcast)
 #define UART_OPCODE_FOTA_DISCOVER_LIST	0x49	// {start} read discovered targets, 10 per reply
+#define UART_OPCODE_LED_TEST		0x4B	// {idx, on} light one board LED (identification); reply {status, count}
 #define UART_OPCODE_DW_SPI_TEST		0x4F	// diagnostic: 41-byte DW1000 SPI write/read-back (USR_SFD, restored)
 
 /* ---------------- UWB protocol ---------------- */
@@ -217,6 +219,7 @@ enum fota_flasher_state {
 /* ---------------- API ---------------- */
 void fota_poll(void);						// call once per main-loop iteration
 int fota_busy(void);						// flasher mode: skip normal UWB/LoRa/sleep
+int fota_keep_awake(void);					// flasher mode or a target counting down: don't sleep
 void fota_uwb_rx(uint32_t frame_len);		// a received frame starts with FOTA_FLAG
 int fota_uart_command(const uint8_t *msg, uint8_t len);	// 1 if the opcode was a FOTA one
 
@@ -227,6 +230,7 @@ uint8_t fota_port_hw(void);
 uint8_t fota_port_battery(void);
 void fota_port_status_led(int on);
 void fota_port_link_led(int on);
+int fota_port_led_set(uint8_t idx, int on);	// LED test; returns LED count, -1 = bad index
 void fota_port_uwb_restore(void);			// back to the normal UWB configuration
 void fota_port_uart_send(void *buf, uint32_t len);
 void fota_port_kick_wd(void);
