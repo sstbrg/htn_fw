@@ -38,6 +38,7 @@ extern "C" {
 HAL_StatusTypeDef Flash_Write(uint32_t address, uint64_t *data, uint32_t num_of_quadwords);
 HAL_StatusTypeDef Flash_Erase(uint32_t bank, uint32_t page);
 void Update_Cash_Mem(void);
+uint8_t Flash_SelfIdSet(uint8_t slot, uint16_t value);
 
 void Jump_To_Boot(void);
 

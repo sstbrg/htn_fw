@@ -243,6 +243,136 @@ void RunTXStateMachine(status_bits errors) {
 	HAL_GPIO_WritePin(SX_LED_RX_GPIO_Port, SX_LED_RX_Pin, GPIO_PIN_RESET); // Turn RX LED Off
 }
 
+/* ---------------- configuration channel (main.h LCMD_*) ----------------
+ * After a beacon whose counter is a multiple of the listen period the tag listens LCMD_LISTEN_MS for
+ * a command preamble (inverted IQ, so only commands are demodulated). A valid command goes to the
+ * same handler as the extended UWB poll v2 and is answered right away with an ack (inverted IQ).
+ * Anything unexpected ends the window and beacons go on: the beacon schedule is never held up by
+ * more than one command and its ack. */
+typedef enum { LS_BEACON, LS_LISTEN, LS_ACK } TagLoraState_t;
+static TagLoraState_t lstate = LS_BEACON;
+static bool beacon_sent = false;		// the last TX was a beacon: its listen slot may follow
+static uint32_t listen_t0 = 0;
+static uint32_t uwb_poll_tick = 0, ext_poll_tick = 0;
+static uint8_t listen_override = 0;		// 0 = automatic
+static uint32_t cmd_tick = 0;
+static sLoRaAck lora_ack;
+
+void Lora_NoteUwbPoll(bool extended) {
+	uwb_poll_tick = HAL_GetTick();
+	if (extended)
+		ext_poll_tick = uwb_poll_tick;
+}
+
+void Lora_SetListenN(uint8_t n) {
+	listen_override = n;
+	cmd_tick = HAL_GetTick();
+}
+
+uint8_t Lora_ListenN(void) {
+	uint32_t now = HAL_GetTick();
+	if (listen_override && now - cmd_tick > 30000)
+		listen_override = 0;
+	if (now - uwb_poll_tick > 1000)
+		return 1;					// UWB silent: LoRa is the only way in, listen after every beacon
+	if (listen_override)
+		return listen_override;
+	if (dwMulti())
+		return LCMD_LISTEN_GROUND;	// two stations: keep the channel as it was
+	return (now - ext_poll_tick < 2000) ? LCMD_LISTEN_ACTIVE : LCMD_LISTEN_GROUND;
+}
+
+// Command mode: inverted IQ, CRC on, 11-byte payload; else the beacon settings. SX1262 datasheet
+// 15.4: register 0x0736 bit 2 must be 0 with inverted IQ and 1 with normal IQ.
+static void lora_cmd_mode(bool on) {
+	PacketParams_t pp = radioConfiguration.packetParams;
+	pp.Params.LoRa.InvertIQ = on ? LORA_IQ_INVERTED : LORA_IQ;
+	pp.Params.LoRa.CrcMode = on ? LORA_CRC_ON : LORA_CRC_MODE;
+	pp.Params.LoRa.PayloadLength = on ? sizeof(sLoRaCmd) : BUFFER_SIZE;
+	Radio.SetPacketParams(&pp);
+	uint8_t r = Radio.ReadReg(0x0736);
+	Radio.WriteReg(0x0736, on ? (r & ~0x04) : (r | 0x04));
+}
+
+static void lora_listen_end(void) {
+	Radio.SetStandby(STDBY_RC);
+	Radio.ClearIrqStatus(0xFFFF);
+	radioFlags.rxDone = radioFlags.rxTimeout = radioFlags.rxError = false;
+	lora_cmd_mode(false);
+	lstate = LS_BEACON;
+}
+
+static void lora_handle_command(void) {
+	uint8_t buf[sizeof(sLoRaCmd)];
+	uint8_t size = 0;
+	if (Radio.GetPayload(buf, &size, sizeof(buf)) != 0 || size != sizeof(sLoRaCmd)) {
+		lora_listen_end();
+		return;
+	}
+	const sLoRaCmd *c = (const sLoRaCmd*)buf;
+	if (c->magic != LCMD_MAGIC || c->checksum != checksum(buf, sizeof(sLoRaCmd)) || c->tag_id != SELF_ID) {
+		lora_listen_end();
+		return;
+	}
+	cmd_tick = HAL_GetTick();
+	lora_ack.magic = LACK_MAGIC;
+	lora_ack.tag_id = SELF_ID;
+	lora_ack.seq = c->seq;
+	lora_ack.item = c->item;
+	lora_ack.value = dwLinkItem(c->src, c->seq, c->item, c->value, &lora_ack.flags);
+	lora_ack.lora_dbm = lora_rxInfo.no_lora ? LINK_LORA_KEEP : Lora_LinkPower();
+	lora_ack.listen_n = Lora_ListenN();
+	lora_ack.checksum = checksum((uint8_t*)&lora_ack, sizeof(lora_ack));
+
+	Radio.SetStandby(STDBY_RC);
+	Radio.ClearIrqStatus(0xFFFF);
+	radioFlags.rxDone = false;
+	radioFlags.txDone = radioFlags.txTimeout = false;
+	Radio.SetPayload((uint8_t*)&lora_ack, sizeof(lora_ack));	// still in command mode: inverted IQ
+	ConfigureRadioTx(&Radio, &radioConfiguration);
+	lora_tx_tick = HAL_GetTick();
+	Radio.SetTx(radioConfiguration.txTimeout);
+	lstate = LS_ACK;
+}
+
+void Lora_TagService(status_bits errors) {
+	switch (lstate) {
+	case LS_LISTEN:
+		if (radioFlags.rxDone)
+			lora_handle_command();
+		else if (radioFlags.rxTimeout || radioFlags.rxError || HAL_GetTick() - listen_t0 > LCMD_EXCHANGE_MS)
+			lora_listen_end();	// nothing for us (the timer stops on a preamble; the guard covers the rest)
+		return;
+	case LS_ACK:
+		if (!Lora_TXidle())		// its TX deadline recovers a lost interrupt
+			return;
+		lora_cmd_mode(false);
+		lstate = LS_BEACON;
+		break;
+	default:
+		break;
+	}
+	if (!Lora_TXidle())
+		return;
+	if (beacon_sent) {
+		beacon_sent = false;
+		uint8_t n = Lora_ListenN();
+		if (lora_msg_index % n == 0) {	// this beacon's slot: listen for a command
+			lora_cmd_mode(true);
+			Radio.SetStopRxTimerOnPreambleDetect(true);
+			ConfigureRadioRx(&Radio, &radioConfiguration);
+			Radio.ClearIrqStatus(0xFFFF);
+			radioFlags.rxDone = radioFlags.rxTimeout = radioFlags.rxError = false;
+			listen_t0 = HAL_GetTick();
+			Radio.SetRx((uint32_t)LCMD_LISTEN_MS * 64);	// 15.625 us units
+			lstate = LS_LISTEN;
+			return;
+		}
+	}
+	RunTXStateMachine(errors);
+	beacon_sent = true;
+}
+
 void ConfigureRadioTx(SX126xHal *radio, RadioConfigurations_t *config) {
 	radio->SetDioIrqParams(config->irqTx, config->irqTx, IRQ_RADIO_NONE,
 			IRQ_RADIO_NONE);

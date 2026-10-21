@@ -160,6 +160,8 @@ extern "C" {
  * 				[fixed] imposter response timestamp uses the applied TX antenna delay (was the default);
  * 				[added] DW1000 crystal trim in flash (opcode 23); 9F/9G only above -90 dBm.
  * 				[added] 9G preset sent to the tag in the extended poll; extended frames also with 9G alone.
+ * 				[added] configuration channel (opcode 24): LoRa commands (inverted IQ) into the tag's listen
+ * 				slots, extended UWB poll v2 as backup; beacon parse checks GetPayload; bench UWB level pin.
  */
 
 #define VERSION "anc3.2.0"
@@ -310,11 +312,13 @@ typedef struct {            // opcode 22 payload, in order
     uint8_t profile_override;
     uint8_t step_interval_ds;   // minimum time between steps away from robustness, 0.1 s
     uint8_t lora_owner;     // 1 = this anchor runs the LoRa loop (one per station)
+    uint8_t uwb_level_pin;  // bench: fixed UWB level for the tag's responses (needs bit2), 0xFF = automatic
 } LinkCfg_t;
 
 typedef struct {
     // extended frames
     uint8_t  ext;           // tag answered the hello: extended polls in use
+    uint8_t  tag_ver;       // the tag's link version from its hello answer (1 = tag3.2.0)
     uint8_t  ext_miss;      // consecutive unanswered extended polls
     uint8_t  ext_hold;      // fell back from extended frames: no hello for LINK_EXT_HOLD_MS
     uint32_t ext_hold_tick;
@@ -360,6 +364,34 @@ typedef struct {
 #define LINK_LP_CONF    2   // confirm sent, waiting for the tag to show the new power
 #define LINK_LP_UP      3   // louder request sent (applied at once), waiting for the echo
 
+/* One configuration item for one tag at a time (opcode 24 TAG_CONFIG): LoRa first, the extended
+ * UWB poll v2 as backup once LoRa has not answered for LITEM_UWB_AFTER_MS. */
+#define LITEM_IDLE          0
+#define LITEM_PENDING       1
+#define LITEM_DONE          2
+#define LITEM_FAILED        3
+#define LITEM_UWB_AFTER_MS  3000
+#define LITEM_GIVE_UP_MS    60000
+#define LITEM_VIA_LORA      1
+#define LITEM_VIA_UWB       2
+typedef struct {
+    uint8_t  state;         // LITEM_IDLE / PENDING / DONE / FAILED
+    uint16_t tag;
+    uint8_t  item;
+    uint16_t value;
+    uint8_t  seq;
+    uint16_t readback;
+    uint8_t  flags;         // LACK_F_* from the answer
+    uint8_t  via;           // LITEM_VIA_* that answered
+    uint8_t  lora_tries;
+    uint8_t  tag_listen_n;  // the tag's listen period from its last ack (0 = unknown)
+    uint32_t listen_tick;
+    uint32_t start_tick;
+} LinkItem_t;
+extern LinkItem_t link_item;
+bool Link_ItemQueue(uint16_t tag, uint8_t item, uint16_t value);
+bool Link_ItemLoraDue(uint8_t beacon_index);	// send the command after this beacon?
+
 extern LinkCfg_t link_cfg;
 extern LinkState_t link_st;
 uint32_t Backoff_Left(void);	// ms left, wrap-safe; clears an expired deadline
@@ -399,6 +431,64 @@ void write_clear_bkup_sram(void);
 void write_bkup_sram(void);
 void SetAnchor_cable_id();
 void SetAnchor_self_id();
+/* Configuration channel (doc 9J/9L): requests reach the tag over LoRa (primary) and over the
+ * extended UWB poll (backup), through one handler on the tag. LoRa commands and acks are sent with
+ * inverted IQ: a normal-IQ receiver (every anchor listening for beacons, and all older firmware)
+ * never demodulates them, so they cannot be mistaken for a beacon. The tag listens for a short
+ * window after a beacon whose counter is a multiple of its listen period (every beacon while UWB
+ * is silent, every 4th while extended UWB polls arrive, every 20th otherwise); anchors send only
+ * into windows that fall on a multiple of 4, which every period above lands on. Items change
+ * only what cannot cut the link; a lost command delays a change, it never changes how the tag
+ * communicates. */
+#define LCMD_MAGIC          0xC3
+#define LACK_MAGIC          0xA5
+#define LCMD_SLOT_MOD       4       // anchors send after beacons with msg_index % 4 == 0
+#define LCMD_LISTEN_GROUND  20      // tag listen period at rest (multiple of LCMD_SLOT_MOD)
+#define LCMD_LISTEN_ACTIVE  4       // while extended UWB polls arrive
+#define LCMD_LISTEN_MS      150     // RX window until a preamble shows (timer stops on preamble)
+#define LCMD_EXCHANGE_MS    1500    // guard on a whole command or ack reception
+
+#define LITEM_NOP           0       // ping: ack carries the state
+                                    // 1: reserved (the LDE preset follows 9G in every extended poll)
+#define LITEM_LISTEN_N      2       // tag listen period 1..255 (back to 20 after 30 s without commands)
+#define LITEM_ANT_TX        3       // TX antenna delay, flash; 0xFFFF = default
+#define LITEM_ANT_RX        4       // RX antenna delay, flash; 0xFFFF = default
+#define LITEM_XTAL          5       // DW1000 crystal trim 0..31, flash; 0xFF = clear
+#define LITEM_NONE          0xFF    // extended poll v2: no item
+
+#define LACK_F_REJECTED     0x01    // value out of range: nothing changed
+#define LACK_F_LDE_NLOS     0x02
+#define LACK_F_MULTI        0x04    // two stations: adaptation items held at the ground state
+#define LACK_F_PENDING      0x08    // a quieter LoRa power request waits for its confirm
+#define LACK_F_APPLYING     0x10    // UWB path: taken, applied after this response; the next answer has the read-back
+
+#pragma pack(push, 1)
+typedef struct {
+    uint8_t  magic;         // LCMD_MAGIC
+    uint16_t tag_id;
+    uint16_t src;           // sending anchor's id
+    uint8_t  seq;           // item sequence number (a repeat is answered, not re-applied)
+    uint8_t  item;
+    uint16_t value;
+    uint8_t  spare;
+    uint8_t  checksum;      // sum of the bytes before it
+} sLoRaCmd;                 // 11 bytes: the same 13 LoRa symbols as a 6-byte beacon at SF12
+
+typedef struct {
+    uint8_t  magic;         // LACK_MAGIC
+    uint16_t tag_id;
+    uint8_t  seq;           // the command answered
+    uint8_t  item;
+    uint16_t value;         // read-back after applying
+    int8_t   lora_dbm;      // LoRa power in use
+    uint8_t  flags;         // LACK_F_*
+    uint8_t  listen_n;      // listen period in force
+    uint8_t  checksum;
+} sLoRaAck;                 // 11 bytes
+#pragma pack(pop)
+void Link_ItemFillCmd(sLoRaCmd *c);
+void Link_ItemOnLoraAck(const sLoRaAck *a);
+
 /* USER CODE END ET */
 
 /* Exported constants --------------------------------------------------------*/

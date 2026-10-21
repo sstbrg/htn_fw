@@ -190,7 +190,7 @@ static void Cir_Window_Command(S_UART_MESSAGE *msg) {
 
 // UART_OPCODE_SET_LINK_FEATURES (doc 9I): LinkCfg_t bytes {features, k_max, lora_target_dbm,
 // lora_band_db, uwb_target_dbm, uwb_band_db, profile_max, profile_override, step_interval_ds,
-// lora_owner}; a shorter payload sets the leading fields, empty = read. Reply: the configuration.
+// lora_owner, uwb_level_pin}; a shorter payload sets the leading fields, empty = read. Reply: the configuration.
 static void Link_Features_Command(S_UART_MESSAGE *msg) {
 	static uint8_t r[2 + sizeof(LinkCfg_t) + 1];
 	if (msg->header.length > sizeof(S_HEADER) + 1)
@@ -233,6 +233,31 @@ static void Xtal_Trim_Command(S_UART_MESSAGE *msg) {
 	r[3] = (saved <= FS_XTALT_MASK) ? (uint8_t)saved : 0xFF;
 	r[4] = dwt_read8bitoffsetreg(FS_CTRL_ID, FS_XTALT_OFFSET) & FS_XTALT_MASK;
 	r[5] = checksum(r, sizeof(r));
+	UART_SendMessage(r, sizeof(r));
+}
+
+// UART_OPCODE_TAG_CONFIG: {tag_id u16, item u8, value u16} queues one configuration item for the tag
+// (LoRa first, extended UWB poll v2 as backup); empty = status. Reply {state, item, value u16,
+// readback u16, flags, via, tag_listen_n, lora_tries}. state: 0 idle, 1 pending, 2 done, 3 failed.
+static void Tag_Config_Command(S_UART_MESSAGE *msg) {
+	static uint8_t r[2 + 10 + 1];
+	if (msg->header.length >= sizeof(S_HEADER) + 5 + 1) {
+		uint16_t tag, value;
+		memcpy(&tag, &msg->buff[0], 2);
+		memcpy(&value, &msg->buff[3], 2);
+		Link_ItemQueue(tag, msg->buff[2], value);
+	}
+	r[0] = msg->header.opcode;
+	r[1] = sizeof(r);
+	r[2] = link_item.state;
+	r[3] = link_item.item;
+	memcpy(&r[4], &link_item.value, 2);
+	memcpy(&r[6], &link_item.readback, 2);
+	r[8] = link_item.flags;
+	r[9] = link_item.via;
+	r[10] = link_item.tag_listen_n;
+	r[11] = link_item.lora_tries;
+	r[sizeof(r) - 1] = checksum(r, sizeof(r));
 	UART_SendMessage(r, sizeof(r));
 }
 
@@ -479,6 +504,10 @@ int main(void)
   				Xtal_Trim_Command(&msg);
   				break;
   			}
+  			case UART_OPCODE_TAG_CONFIG: {
+  				Tag_Config_Command(&msg);
+  				break;
+  			}
   			case UART_OPCODE_READ_CIR_WINDOW: {
   				Cir_Window_Command(&msg);
   				break;
@@ -555,7 +584,10 @@ int main(void)
   		{
   			Lora_Debug();
   		}
-		if (Lora_RXIdle()) {
+		if (!lora_rxInfo.no_lora && Lora_CmdService()) {
+			// a configuration command and its ack own the LoRa radio for now
+		}
+		else if (Lora_RXIdle()) {
 			if (radioFlags.wakeup_seq) {
 				switch (wakeup_state) {
 					case WAKEUP_START:

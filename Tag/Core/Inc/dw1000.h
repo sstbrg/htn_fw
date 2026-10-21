@@ -136,10 +136,62 @@ typedef struct {			// extended response: legacy bytes 0-17, then the tag's state
 } twr_tag_ext_msg_t;
 #pragma pack (pop)
 
+/* Extended frames v2 (tag3.2.1 and later; the hello answer's bits 5..1 carry the version): v1 plus
+ * one configuration item (LITEM_*, main.h), the backup path for what normally goes over LoRa. */
+#define LINK_VERSION        2
+#define LINK_VER_OF(b)      (((b) >> 1) & 0x1F)
+
+#pragma pack(push, 1)
+typedef struct {
+		uint8_t t_a_flag = ANCHOR_FLAG;
+		uint8_t i1 = 0x88;
+		uint8_t msd_index = 0;
+		uint8_t i3 = 0xCA;
+		uint8_t i4 = 0xDE;
+		uint16_t src = 0;
+		uint16_t des = 0;
+		uint8_t i9 = LINK_EXT_MARK;
+		uint8_t seq = 0;
+		int8_t req_lora_dbm = LINK_LORA_KEEP;
+		uint8_t req_uwb_level = 0;
+		uint8_t confirm_seq = 0;
+		uint8_t ctrl = 0;
+		uint8_t item_seq = 0;		// configuration item (backup path)
+		uint8_t item = 0xFF;		// LITEM_*, 0xFF = none
+		uint16_t item_value = 0;
+		uint8_t crc0 = 0;
+		uint8_t crc1 = 0;
+} twr_anchor_ext2_msg_t;
+
+typedef struct {
+		uint8_t t_a_flag = TAG_FLAG;
+		uint8_t i1 = 0x88;
+		uint8_t msd_index = 0;
+		uint8_t i3 = 0xCA;
+		uint8_t i4 = 0xDE;
+		uint16_t src = SELF_ID;
+		uint16_t des = 0;
+		uint8_t tag_no_lora = 0;
+		uint32_t poll_rx_ts_id = 0;
+		uint32_t resp_tx_ts_id = 0;
+		uint8_t ack_seq = 0;
+		int8_t lora_dbm = 0;
+		uint8_t uwb_level = 0;
+		uint8_t profile_used = 0;
+		uint8_t item_seq = 0;		// item answered (0xFF item = none)
+		uint8_t item = 0xFF;
+		uint16_t item_value = 0;	// read-back
+		uint8_t item_flags = 0;		// LACK_F_*
+		uint8_t crc0 = 0;
+		uint8_t crc1 = 0;
+} twr_tag_ext2_msg_t;
+#pragma pack (pop)
+
 // The legacy sizes are what older firmware checks: they must never change.
 static_assert(sizeof(twr_anchor_msg_t) == 12, "legacy poll is 12 bytes");
 static_assert(sizeof(twr_tag_msg_t) == 20, "legacy response is 20 bytes");
 static_assert(sizeof(twr_anchor_ext_msg_t) == 17 && sizeof(twr_tag_ext_msg_t) == 24, "extended frames");
+static_assert(sizeof(twr_anchor_ext2_msg_t) == 21 && sizeof(twr_tag_ext2_msg_t) == 29, "extended frames v2");
 
 #define LINK_LORA_MAX_DBM   22
 #define LINK_LORA_MIN_DBM   (-9)    // SX1262 high-power PA floor
@@ -238,7 +290,9 @@ void dwApplyAntennaDelays(void);	//	per-device antenna delays from flash, or the
 void dwApplyXtalTrim(void);			//	per-device DW1000 crystal trim from flash, or the OTP/default
 int dwRange(void);
 void dwmStatus( void );
-void dwRecover( void );				//	main loop: bounded re-initialisation while no_uwb
+void dwRecover( void );
+bool dwMulti( void );				//	polls from two stations in the last LINK_MULTI_MS (9K)
+uint16_t dwLinkItem(uint16_t src, uint8_t seq, uint8_t item, uint16_t value, uint8_t *flags);				//	main loop: bounded re-initialisation while no_uwb
 
 void dw_PreSleep(void);
 void dw_PostSleep(void);

@@ -335,9 +335,9 @@ int main(void)
 		if (lora_rxInfo.no_lora == false && !fota_busy()){
 			if (lora_rxInfo.wakeup_detected == true){
 
-				if (Lora_TXidle() && !PWR_NeedToSleep())
+				if (!PWR_NeedToSleep())
 				{
-					RunTXStateMachine(errors);
+					Lora_TagService(errors);	// beacons, plus the command listen window and its ack
 				}
 			}
 			else

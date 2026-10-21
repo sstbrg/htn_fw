@@ -81,6 +81,88 @@ void Lora_Status(){
 static uint32_t lora_tx_tick = 0;
 static uint32_t lora_rx_tick = 0;
 
+/* ---------------- configuration commands (main.h LCMD_*) ----------------
+ * Right after a beacon on one of the tag's listen slots: the command (inverted IQ), then a short
+ * window for the tag's ack (inverted IQ), then back to beacons. Normal-IQ receivers never see either. */
+static void Lora_Recover(void);
+typedef enum { CS_NORMAL, CS_CMD_TX, CS_ACK_RX } CmdState_t;
+static CmdState_t cmd_state = CS_NORMAL;
+static uint32_t cmd_t0 = 0;
+#define LCMD_ACK_WINDOW_MS 300
+
+// SX1262 datasheet 15.4: register 0x0736 bit 2 = 0 with inverted IQ, 1 with normal IQ.
+static void lora_cmd_mode(bool on) {
+	PacketParams_t pp = radioConfiguration.packetParams;
+	pp.Params.LoRa.InvertIQ = on ? LORA_IQ_INVERTED : LORA_IQ;
+	pp.Params.LoRa.CrcMode = on ? LORA_CRC_ON : LORA_CRC_MODE;
+	pp.Params.LoRa.PayloadLength = on ? sizeof(sLoRaCmd) : BUFFER_SIZE;
+	Radio.SetPacketParams(&pp);
+	uint8_t r = Radio.ReadReg(0x0736);
+	Radio.WriteReg(0x0736, on ? (r & ~0x04) : (r | 0x04));
+}
+
+void Lora_SendCommand(void) {
+	sLoRaCmd c;
+	Link_ItemFillCmd(&c);
+	Radio.SetStandby(STDBY_RC);
+	lora_cmd_mode(true);
+	Radio.SetPayload((uint8_t*)&c, sizeof(c));
+	ConfigureRadioTx(&Radio, &radioConfiguration);
+	radioFlags.txDone = radioFlags.txTimeout = false;
+	lora_tx_tick = cmd_t0 = HAL_GetTick();
+	Radio.SetTx(radioConfiguration.txTimeout);
+	cmd_state = CS_CMD_TX;
+}
+
+static void lora_cmd_finish(void) {
+	Radio.SetStandby(STDBY_RC);
+	Radio.ClearIrqStatus(0xFFFF);
+	lora_cmd_mode(false);
+	Radio.SetStopRxTimerOnPreambleDetect(false);
+	radioFlags.rxDone = radioFlags.rxError = false;
+	radioFlags.rxTimeout = true;	// the main loop re-arms beacon reception
+	cmd_state = CS_NORMAL;
+}
+
+// Main loop, before the beacon handling: true while a command exchange owns the radio.
+bool Lora_CmdService(void) {
+	uint32_t now = HAL_GetTick();
+	switch (cmd_state) {
+	case CS_CMD_TX:
+		if (!radioFlags.txDone && !radioFlags.txTimeout) {
+			if (now - cmd_t0 > LCMD_EXCHANGE_MS + LORA_RECOVER_MS) {	// TX never ended
+				Lora_Recover();
+				lora_cmd_finish();
+			}
+			return true;
+		}
+		Radio.SetStopRxTimerOnPreambleDetect(true);
+		ConfigureRadioRx(&Radio, &radioConfiguration);
+		Radio.ClearIrqStatus(0xFFFF);
+		radioFlags.rxDone = radioFlags.rxTimeout = radioFlags.rxError = false;
+		cmd_t0 = now;
+		Radio.SetRx((uint32_t)LCMD_ACK_WINDOW_MS * 64);	// 15.625 us units; stops on a preamble
+		cmd_state = CS_ACK_RX;
+		return true;
+	case CS_ACK_RX:
+		if (radioFlags.rxDone) {
+			uint8_t buf[sizeof(sLoRaAck)];
+			uint8_t size = 0;
+			if (Radio.GetPayload(buf, &size, sizeof(buf)) == 0 && size == sizeof(sLoRaAck)) {
+				const sLoRaAck *a = (const sLoRaAck*)buf;
+				if (a->magic == LACK_MAGIC && a->checksum == checksum(buf, sizeof(sLoRaAck)))
+					Link_ItemOnLoraAck(a);
+			}
+			lora_cmd_finish();
+		} else if (radioFlags.rxTimeout || radioFlags.rxError || now - cmd_t0 > LCMD_EXCHANGE_MS) {
+			lora_cmd_finish();
+		}
+		return true;
+	default:
+		return false;
+	}
+}
+
 static void Lora_Recover(void) {
 	Radio.Init();
 	ConfigureGeneralRadio(&Radio, &radioConfiguration);
@@ -98,13 +180,16 @@ void Lora_Operation_RX(){
 	lora_rxInfo.signal_rssi = 0;
 
 
+	bool send_cmd = false;
 	if(radioFlags.rxDone == true){
 		radioFlags.rxDone = false;
-		Radio.GetPayload(lora_rxInfo.raw_buffer, &lora_rxInfo.buffer_length, LORA_RX_BUFFER_SIZE);
+		// A packet of another length is not a beacon: GetPayload() leaves the buffer alone then, and
+		// the previous beacon must not be counted again
+		uint8_t got = Radio.GetPayload(lora_rxInfo.raw_buffer, &lora_rxInfo.buffer_length, LORA_RX_BUFFER_SIZE);
 
 		p_lora_msg = (sLoRaMsg*)lora_rxInfo.raw_buffer;
 		uint8_t checksum_ = checksum((uint8_t*)&lora_rxInfo.raw_buffer, sizeof(lora_rxInfo.raw_buffer)-1);// crc not including crc itself
-		if(p_lora_msg->checksum == checksum_)
+		if(got == 0 && lora_rxInfo.buffer_length == LORA_RX_BUFFER_SIZE && p_lora_msg->checksum == checksum_)
 			if(p_lora_msg->tag_id == lora_rxInfo.tag_id){ //check for Lora Tag ID
 				lora_rxInfo.lora_msg_index = p_lora_msg->msg_index;
 				lora_rxInfo.tag_soc = p_lora_msg->soc;
@@ -115,6 +200,7 @@ void Lora_Operation_RX(){
 				lora_rxInfo.RxCounter++;
 				GetRssiSnr(&lora_rxInfo.rssi, &lora_rxInfo.snr);
 				Link_OnLoraPacket(lora_rxInfo.signal_rssi, lora_rxInfo.snr);
+				send_cmd = !radioFlags.wakeup_seq && !dwmInfoPtr->tag_imposter && Link_ItemLoraDue(p_lora_msg->msg_index);
 
 				HAL_GPIO_TogglePin(SX_LED_RX_GPIO_Port, SX_LED_RX_Pin);
 			}
@@ -126,6 +212,10 @@ void Lora_Operation_RX(){
 	}
 	radioFlags.rxError = false;	// consumed: one restart per error, not one per main-loop pass
 
+	if (send_cmd) {		// the tag listens right after this beacon
+		Lora_SendCommand();
+		return;
+	}
 	ConfigureRadioRx(&Radio, &radioConfiguration);
 	Radio.ClearIrqStatus(0xFFFF);
 	lora_rx_tick = HAL_GetTick();

@@ -148,6 +148,8 @@ extern "C" {
  *				[fixed] response timestamp uses the applied TX antenna delay (a calibrated TX delay had no
  *				effect); Flash_Write invalidates ICACHE; [added] DW1000 crystal trim in flash (opcode 23).
  *				[added] LDE preset from the anchor's extended poll (9G), LOS on a legacy poll / two stations / 1 s silence.
+ *				[added] configuration channel: LoRa listen window after every 1st/4th/20th beacon, inverted-IQ
+ *				command + ack, extended UWB poll v2 backup; items: listen period, antenna delays, crystal trim.
  */
 
 #define VERSION "tag3.2.0"
@@ -226,6 +228,62 @@ enum
 
 #define SRAM_BKUP_REGISTER  0X40036400
 #define SRAM_BKUP_REGISTER_CLEAR 0
+
+/* Configuration channel (doc 9J/9L): requests reach the tag over LoRa (primary) and over the
+ * extended UWB poll (backup), through one handler on the tag. LoRa commands and acks are sent with
+ * inverted IQ: a normal-IQ receiver (every anchor listening for beacons, and all older firmware)
+ * never demodulates them, so they cannot be mistaken for a beacon. The tag listens for a short
+ * window after a beacon whose counter is a multiple of its listen period (every beacon while UWB
+ * is silent, every 4th while extended UWB polls arrive, every 20th otherwise); anchors send only
+ * into windows that fall on a multiple of 4, which every period above lands on. Items change
+ * only what cannot cut the link; a lost command delays a change, it never changes how the tag
+ * communicates. */
+#define LCMD_MAGIC          0xC3
+#define LACK_MAGIC          0xA5
+#define LCMD_SLOT_MOD       4       // anchors send after beacons with msg_index % 4 == 0
+#define LCMD_LISTEN_GROUND  20      // tag listen period at rest (multiple of LCMD_SLOT_MOD)
+#define LCMD_LISTEN_ACTIVE  4       // while extended UWB polls arrive
+#define LCMD_LISTEN_MS      150     // RX window until a preamble shows (timer stops on preamble)
+#define LCMD_EXCHANGE_MS    1500    // guard on a whole command or ack reception
+
+#define LITEM_NOP           0       // ping: ack carries the state
+                                    // 1: reserved (the LDE preset follows 9G in every extended poll)
+#define LITEM_LISTEN_N      2       // tag listen period 1..255 (back to 20 after 30 s without commands)
+#define LITEM_ANT_TX        3       // TX antenna delay, flash; 0xFFFF = default
+#define LITEM_ANT_RX        4       // RX antenna delay, flash; 0xFFFF = default
+#define LITEM_XTAL          5       // DW1000 crystal trim 0..31, flash; 0xFF = clear
+#define LITEM_NONE          0xFF    // extended poll v2: no item
+
+#define LACK_F_REJECTED     0x01    // value out of range: nothing changed
+#define LACK_F_LDE_NLOS     0x02
+#define LACK_F_MULTI        0x04    // two stations: adaptation items held at the ground state
+#define LACK_F_PENDING      0x08    // a quieter LoRa power request waits for its confirm
+#define LACK_F_APPLYING     0x10    // UWB path: taken, applied after this response; the next answer has the read-back
+
+#pragma pack(push, 1)
+typedef struct {
+    uint8_t  magic;         // LCMD_MAGIC
+    uint16_t tag_id;
+    uint16_t src;           // sending anchor's id
+    uint8_t  seq;           // item sequence number (a repeat is answered, not re-applied)
+    uint8_t  item;
+    uint16_t value;
+    uint8_t  spare;
+    uint8_t  checksum;      // sum of the bytes before it
+} sLoRaCmd;                 // 11 bytes: the same 13 LoRa symbols as a 6-byte beacon at SF12
+
+typedef struct {
+    uint8_t  magic;         // LACK_MAGIC
+    uint16_t tag_id;
+    uint8_t  seq;           // the command answered
+    uint8_t  item;
+    uint16_t value;         // read-back after applying
+    int8_t   lora_dbm;      // LoRa power in use
+    uint8_t  flags;         // LACK_F_*
+    uint8_t  listen_n;      // listen period in force
+    uint8_t  checksum;
+} sLoRaAck;                 // 11 bytes
+#pragma pack(pop)
 
 /* USER CODE END ET */
 

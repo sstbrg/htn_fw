@@ -26,6 +26,7 @@ static void resp_msg_set_ts(uint8 *ts_field, const uint64 ts);
 //static uint8 tx_resp_msg[] = {TAG_FLAG, 0x88, 0, 0xCA, 0xDE, (uint8_t)(SELF_ID&0xFF),(uint8_t)(SELF_ID>>8), 'P', 'A', 0xE1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 twr_tag_msg_t tx_resp_msg;
 twr_tag_ext_msg_t tx_resp_ext;
+twr_tag_ext2_msg_t tx_resp_ext2;
 
 uint8_t dummy_buff[1024] = {0};
 
@@ -288,6 +289,8 @@ static void dwSetLde(bool nlos) {
 
 /* 9K: polls from two stations (PC ids) in the last LINK_MULTI_MS mean no adaptation. */
 static uint16_t seen_pc[2] = {0xFFFF, 0xFFFF};
+static uint32_t multi_tick = 0;
+static bool dw_reinit_due = false;	// a configuration item asked for a full DW1000 re-init
 static uint32_t seen_tick[2] = {0, 0};
 
 static bool dwNotePoll(uint16_t src) {
@@ -303,10 +306,100 @@ static bool dwNotePoll(uint16_t src) {
 	seen_pc[i] = pc;
 	seen_tick[i] = now;
 	int j = 1 - i;
-	return seen_pc[j] != 0xFFFF && now - seen_tick[j] < LINK_MULTI_MS;
+	bool multi = seen_pc[j] != 0xFFFF && now - seen_tick[j] < LINK_MULTI_MS;
+	if (multi)
+		multi_tick = now;
+	return multi;
+}
+
+bool dwMulti(void) {
+	return multi_tick != 0 && HAL_GetTick() - multi_tick < LINK_MULTI_MS;
+}
+
+/* One handler for configuration items, whichever path brought them (LoRa command or extended UWB
+ * poll v2). A repeat of the last (src, seq) is answered, not applied again. Items change only what
+ * cannot cut the link. Returns the read-back; *flags gets LACK_F_*. */
+static uint16_t last_src = 0xFFFF;
+static uint8_t last_seq = 0, last_item = 0xFF;
+static struct { bool due; uint16_t src, value; uint8_t seq, item; } deferred_item;
+
+uint16_t dwLinkItem(uint16_t src, uint8_t seq, uint8_t item, uint16_t value, uint8_t *flags) {
+	bool repeat = (src == last_src && seq == last_seq && item == last_item);
+	const uint16_t *page = (const uint16_t*)FLASH_SELF_ID_ADDRESS;
+	uint16_t rb = 0;
+	*flags = 0;
+
+	switch (item) {
+	case LITEM_NOP:
+		break;
+	case LITEM_LISTEN_N:
+		if (value < 1 || value > 255) { *flags |= LACK_F_REJECTED; break; }
+		if (!repeat) Lora_SetListenN((uint8_t)value);
+		break;
+	case LITEM_ANT_TX:
+	case LITEM_ANT_RX:
+		if (value != 0xFFFF && (value < 15000 || value > 18000)) { *flags |= LACK_F_REJECTED; break; }
+		if (!repeat && Flash_SelfIdSet(item == LITEM_ANT_TX ? 1 : 2, value) == 0)
+			dwApplyAntennaDelays();
+		break;
+	case LITEM_XTAL:
+		if (value != 0xFF && value > FS_XTALT_MASK) { *flags |= LACK_F_REJECTED; break; }
+		if (!repeat && Flash_SelfIdSet(3, value == 0xFF ? 0xFFFF : value) == 0) {
+			if (value == 0xFF)
+				dw_reinit_due = true;	// back to the OTP trim: full re-init, after this exchange
+			else
+				dwt_setxtaltrim((uint8_t)value);
+		}
+		break;
+	default:
+		*flags |= LACK_F_REJECTED;
+		break;
+	}
+	switch (item) {	// read-back
+	case LITEM_LISTEN_N: rb = Lora_ListenN(); break;
+	case LITEM_ANT_TX:   rb = page[1]; break;
+	case LITEM_ANT_RX:   rb = page[2]; break;
+	case LITEM_XTAL:     rb = dwt_read8bitoffsetreg(FS_CTRL_ID, FS_XTALT_OFFSET) & FS_XTALT_MASK; break;
+	default: break;
+	}
+	if (lde_nlos) *flags |= LACK_F_LDE_NLOS;
+	if (dwMulti()) *flags |= LACK_F_MULTI;
+	if (Lora_LinkPending()) *flags |= LACK_F_PENDING;
+	last_src = src; last_seq = seq; last_item = item;
+	return rb;
+}
+
+// UWB path: answer within the 5 ms response delay. A new item is only noted here and applied after
+// the response has gone out (a flash write could miss the delayed TX); a repeat gets the read-back.
+static uint16_t dwLinkItemUwb(uint16_t src, uint8_t seq, uint8_t item, uint16_t value, uint8_t *flags) {
+	bool repeat = (src == last_src && seq == last_seq && item == last_item);
+	if (repeat || (deferred_item.due && deferred_item.src == src && deferred_item.seq == seq)) {
+		if (!repeat) {	// still waiting for its turn after the response
+			*flags = LACK_F_APPLYING;
+			return 0;
+		}
+		return dwLinkItem(src, seq, item, value, flags);
+	}
+	deferred_item.src = src; deferred_item.seq = seq; deferred_item.item = item; deferred_item.value = value;
+	deferred_item.due = true;
+	*flags = LACK_F_APPLYING;
+	return 0;
+}
+
+static void dwLinkItemApplyDeferred(void) {
+	if (!deferred_item.due)
+		return;
+	deferred_item.due = false;
+	uint8_t f;
+	(void)dwLinkItem(deferred_item.src, deferred_item.seq, deferred_item.item, deferred_item.value, &f);
 }
 
 int dwRange(void) {
+	if (dw_reinit_due) {	// outside any exchange
+		dw_reinit_due = false;
+		if (dwmInit())
+			dwConfig(&config);
+	}
 	if (lde_nlos && HAL_GetTick() - last_ext_tick > LINK_SILENCE_MS)
 		dwSetLde(false);	// no anchor is steering it any more: LOS
 	/* Activate reception immediately. */
@@ -354,7 +447,7 @@ int dwRange(void) {
 	if (status_reg & SYS_STATUS_RXFCG) {
 
 		uint32 frame_len;
-		twr_anchor_ext_msg_t rx_buffer;	// legacy poll, or extended poll (see LINK_HELLO in dw1000.h)
+		twr_anchor_ext2_msg_t rx_buffer;	// legacy poll, or extended poll v1/v2 (see LINK_HELLO in dw1000.h)
 
 		DBG_ON
 		/* Clear good RX frame event in the DW1000 status register. */
@@ -368,7 +461,8 @@ int dwRange(void) {
 			fota_uwb_rx(frame_len);
 			return 0;
 		}
-		if (frame_len == sizeof(twr_anchor_msg_t) || frame_len == sizeof(twr_anchor_ext_msg_t)) {
+		if (frame_len == sizeof(twr_anchor_msg_t) || frame_len == sizeof(twr_anchor_ext_msg_t)
+				|| frame_len == sizeof(twr_anchor_ext2_msg_t)) {
 			dwt_readrxdata((uint8_t *)&rx_buffer, frame_len, 0);
 		}
 		else {
@@ -379,8 +473,10 @@ int dwRange(void) {
 		/* Check that the frame is a poll sent by "SS TWR initiator" example.
 		 * As the sequence number field of the frame is not relevant, it is cleared to simplify the validation of the frame. */
 		if (rx_buffer.des == SELF_ID) {
-			bool ext = (frame_len == sizeof(twr_anchor_ext_msg_t)) && (rx_buffer.i9 == LINK_EXT_MARK);
+			bool ext2 = (frame_len == sizeof(twr_anchor_ext2_msg_t)) && (rx_buffer.i9 == LINK_EXT_MARK);
+			bool ext = ext2 || ((frame_len == sizeof(twr_anchor_ext_msg_t)) && (rx_buffer.i9 == LINK_EXT_MARK));
 			bool multi = dwNotePoll(rx_buffer.src);
+			Lora_NoteUwbPoll(ext);	// sets the LoRa listen period
 			tx_resp_msg.des = rx_buffer.src;
 			lora_rxInfo.wakeup_detected = true; //enable Lora while recieve uwb
 			uint32 resp_tx_time;
@@ -425,15 +521,28 @@ int dwRange(void) {
 				tx_resp_ext.lora_dbm = lora_rxInfo.no_lora ? LINK_LORA_KEEP : Lora_LinkPower();
 				tx_resp_ext.uwb_level = uwb_tx_level;
 				tx_resp_ext.profile_used = 0;
-				dwt_writetxdata(sizeof(tx_resp_ext), (uint8_t*)&tx_resp_ext, 0);
-				dwt_writetxfctrl(sizeof(tx_resp_ext), 0, 1);
+				if (ext2) {	// v2: same fields, plus the configuration item's answer
+					memcpy((uint8_t*)&tx_resp_ext2, (const uint8_t*)&tx_resp_ext, sizeof(twr_tag_ext_msg_t) - 2);
+					tx_resp_ext2.item = rx_buffer.item;
+					tx_resp_ext2.item_seq = rx_buffer.item_seq;
+					tx_resp_ext2.item_value = 0;
+					tx_resp_ext2.item_flags = 0;
+					if (rx_buffer.item != LITEM_NONE)
+						tx_resp_ext2.item_value = dwLinkItemUwb(rx_buffer.src, rx_buffer.item_seq, rx_buffer.item,
+								rx_buffer.item_value, &tx_resp_ext2.item_flags);
+					dwt_writetxdata(sizeof(tx_resp_ext2), (uint8_t*)&tx_resp_ext2, 0);
+					dwt_writetxfctrl(sizeof(tx_resp_ext2), 0, 1);
+				} else {
+					dwt_writetxdata(sizeof(tx_resp_ext), (uint8_t*)&tx_resp_ext, 0);
+					dwt_writetxfctrl(sizeof(tx_resp_ext), 0, 1);
+				}
 			} else {
 				dwSetTxLevel(0);
 				dwSetLde(false);	// a legacy poll means the ground state
 				Lora_LinkMax();
 				tx_resp_msg.tag_no_lora = lora_rxInfo.no_lora;
 				if (rx_buffer.i9 == LINK_HELLO)	// a new anchor asks: say we can do extended frames
-					tx_resp_msg.tag_no_lora |= LINK_CAPABLE | (multi ? LINK_CAPABLE_MULTI : 0);
+					tx_resp_msg.tag_no_lora |= LINK_CAPABLE | (LINK_VERSION << 1) | (multi ? LINK_CAPABLE_MULTI : 0);
 				/* Write and send the response message. See NOTE 9 below. */
 				dwt_writetxdata(sizeof(tx_resp_msg), (uint8_t*)&tx_resp_msg, 0); /* Zero offset in TX buffer. */
 				dwt_writetxfctrl(sizeof(tx_resp_msg), 0, 1); /* Zero offset in TX buffer, ranging. */
@@ -453,6 +562,7 @@ int dwRange(void) {
 				PWR_SetTimeOut(PWR_Duration_MyMessage);
 			}
 			dwSetTxLevel(0);	// FOTA and everything else stays at full power
+			dwLinkItemApplyDeferred();	// the response is out: flash writes are safe now
 		}
 		DBG_OFF
 	} else {

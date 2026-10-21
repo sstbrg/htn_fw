@@ -150,6 +150,11 @@ void Lora_LinkMax(void);
 uint8_t Lora_LinkRequest(uint16_t src, uint8_t seq, int8_t req, uint8_t confirm, bool multi);
 bool Lora_LinkPending(void);
 int8_t Lora_LinkPower(void);
+// Configuration channel (main.h LCMD_*): beacons with a listen window after some of them
+void Lora_TagService(status_bits errors);
+void Lora_NoteUwbPoll(bool extended);	// every UWB poll addressed to this tag
+void Lora_SetListenN(uint8_t n);		// host override, back to automatic after 30 s without commands
+uint8_t Lora_ListenN(void);
 uint16_t scramble(uint16_t self_id);
 
 #ifdef __cplusplus

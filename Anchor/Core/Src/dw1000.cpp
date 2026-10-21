@@ -14,6 +14,7 @@ static uint64 resp_tx_ts;
 /* Frames used in the ranging process. See NOTE 3 below. */
 twr_anchor_msg_t tx_poll_msg;
 twr_anchor_ext_msg_t tx_poll_ext;
+twr_anchor_ext2_msg_t tx_poll_ext2;
 twr_tag_msg_t rx_resp_msg;
 twr_tag_msg_t tx_resp_msg;
 uint8_t dummy_buff[1024] = {0};
@@ -213,7 +214,7 @@ void dwScanMode(void) {
 	if ((status_reg & SYS_STATUS_RXFCG) && !(status_reg & SYS_STATUS_ALL_DF_CLK)) {
 
 		uint32 frame_len;
-		twr_tag_ext_msg_t rx_buffer;	// any UWB frame up to an extended response
+		twr_tag_ext2_msg_t rx_buffer;	// any UWB frame up to an extended v2 response
 
 		/* Clear good RX frame event in the DW1000 status register. */
 		dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_RXFCG);
@@ -322,8 +323,15 @@ static uint8_t dwExchange(bool first) {
 		memcpy((uint8_t*)&tx_poll_ext, (const uint8_t*)&tx_poll_msg, ALL_MSG_COMMON_LEN);	// flag, ids and sequence number
 		tx_poll_ext.i9 = LINK_EXT_MARK;
 		Link_FillExtPoll(&tx_poll_ext);
-		dwt_writetxdata(sizeof(tx_poll_ext), (uint8_t*)&tx_poll_ext, 0);
-		dwt_writetxfctrl(sizeof(tx_poll_ext), 0, 1);
+		if (Link_ItemUwbDue()) {	// v2: the same, plus the configuration item (backup path)
+			memcpy((uint8_t*)&tx_poll_ext2, (const uint8_t*)&tx_poll_ext, sizeof(twr_anchor_ext_msg_t) - 2);
+			Link_ItemFillPoll(&tx_poll_ext2);
+			dwt_writetxdata(sizeof(tx_poll_ext2), (uint8_t*)&tx_poll_ext2, 0);
+			dwt_writetxfctrl(sizeof(tx_poll_ext2), 0, 1);
+		} else {
+			dwt_writetxdata(sizeof(tx_poll_ext), (uint8_t*)&tx_poll_ext, 0);
+			dwt_writetxfctrl(sizeof(tx_poll_ext), 0, 1);
+		}
 	} else {
 		hello = Link_WantHello();
 		tx_poll_msg.i9 = hello ? LINK_HELLO : ANCHOR_FLAG;	// 0xE0 is what anc3.1.5 sends
@@ -360,7 +368,7 @@ static uint8_t dwExchange(bool first) {
 
 	if ((status_reg & SYS_STATUS_RXFCG) && !(status_reg & SYS_STATUS_ALL_DF_CLK)) {
 		uint32 frame_len;
-		twr_tag_ext_msg_t rx_buffer;	// legacy or extended response; the legacy part is common
+		twr_tag_ext2_msg_t rx_buffer;	// legacy, extended or extended v2 response; the legacy part is common
 		/* Clear good RX frame event in the DW1000 status register. */
 		dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_RXFCG);
 
@@ -385,8 +393,10 @@ static uint8_t dwExchange(bool first) {
 			uint32 poll_tx_ts, resp_rx_ts, poll_rx_ts, resp_tx_ts;
 			int32 rtd_init, rtd_resp;
 			float clockOffsetRatio;
-			bool ext_resp = ext_poll && (frame_len == sizeof(twr_tag_ext_msg_t));
-			Link_OnResponse(&rx_buffer, ext_poll, ext_resp, hello);
+			bool ext_resp = ext_poll && (frame_len == sizeof(twr_tag_ext_msg_t) || frame_len == sizeof(twr_tag_ext2_msg_t));
+			Link_OnResponse((const twr_tag_ext_msg_t*)&rx_buffer, ext_poll, ext_resp, hello);
+			if (ext_resp && frame_len == sizeof(twr_tag_ext2_msg_t))
+				Link_ItemOnUwb(&rx_buffer);
 			/* Retrieve poll transmission and response reception timestamps. See NOTE 9 below. */
 			poll_tx_ts = dwt_readtxtimestamplo32();
 			resp_rx_ts = dwt_readrxtimestamplo32();
@@ -581,7 +591,7 @@ void dwLatchExchange(void) {
  */
 LinkCfg_t link_cfg = { .features = 0, .k_max = 0, .lora_target_dbm = -70, .lora_band_db = 6,
 		.uwb_target_dbm = -80, .uwb_band_db = 5, .profile_max = 0, .profile_override = 0xFF,
-		.step_interval_ds = 20, .lora_owner = 0 };
+		.step_interval_ds = 20, .lora_owner = 0, .uwb_level_pin = 0xFF };
 LinkState_t link_st;
 
 static uint32_t link_step_ms(void) {
@@ -596,6 +606,7 @@ static void link_next_seq(void) {
 // Everything at maximum on legacy frames, as anc3.1.5.
 static void link_reset(void) {
 	link_st.ext = 0;
+	link_st.tag_ver = 0;
 	link_st.ext_miss = 0;
 	link_st.reverting = 0;
 	link_st.uwb_level = link_st.uwb_prev = 0;
@@ -706,6 +717,8 @@ void Link_FillExtPoll(twr_anchor_ext_msg_t *p) {
 		p->req_uwb_level = 0;
 		return;
 	}
+	if ((link_cfg.features & LINK_F_POWER) && link_cfg.uwb_level_pin < LINK_UWB_LEVELS)
+		link_st.uwb_level = link_cfg.uwb_level_pin;	// bench pin; the loop below does not move it
 	p->req_uwb_level = link_st.uwb_level;
 
 	if (!link_lora_active()) {
@@ -755,6 +768,7 @@ void Link_OnResponse(const twr_tag_ext_msg_t *r, bool ext_poll, bool ext_resp, b
 			if (Link_Coexisting())
 				return;		// 9K: stay on legacy polls while two stations share the tag
 			link_reset();	// extended frames from now on
+			link_st.tag_ver = LINK_VER_OF(r->tag_no_lora) ? LINK_VER_OF(r->tag_no_lora) : 1;
 			link_st.ext = 1;
 			link_st.last_uwb_tick = link_st.last_lora_tick = now;
 			link_st.uwb_step_tick = link_st.lora_step_tick = now;
@@ -839,6 +853,97 @@ void Link_OnResponse(const twr_tag_ext_msg_t *r, bool ext_poll, bool ext_resp, b
 	}
 }
 
+/* ---------------- configuration items (opcode 24, main.h LCMD_* / LITEM_*) ----------------
+ * One item for one tag at a time. LoRa first: after a beacon on a slot the tag listens to, the
+ * command goes out with inverted IQ and the tag acks right away. Once LoRa has not answered for
+ * LITEM_UWB_AFTER_MS the item also rides the extended UWB poll v2 (tag3.2.1+), whose answer comes
+ * after the tag has applied it ("applying" first, the read-back on a later poll). */
+LinkItem_t link_item = { .state = LITEM_IDLE };
+
+bool Link_ItemQueue(uint16_t tag, uint8_t item, uint16_t value) {
+	if (item == LITEM_NONE)
+		return false;
+	link_item.tag = tag & 0x7FFF;
+	link_item.item = item;
+	link_item.value = value;
+	if (++link_item.seq == 0)
+		link_item.seq = 1;
+	link_item.readback = 0;
+	link_item.flags = 0;
+	link_item.via = 0;
+	link_item.lora_tries = 0;
+	link_item.start_tick = HAL_GetTick();
+	link_item.state = LITEM_PENDING;
+	return true;
+}
+
+static bool link_item_active(uint16_t tag) {
+	if (link_item.state != LITEM_PENDING || link_item.tag != tag)
+		return false;
+	if (HAL_GetTick() - link_item.start_tick > LITEM_GIVE_UP_MS) {
+		link_item.state = LITEM_FAILED;
+		return false;
+	}
+	return true;
+}
+
+// Slots the tag listens to: multiples of its period. Unknown or stale -> the ground period, whose
+// slots every period lands on, so no command is sent into a window that is not open.
+bool Link_ItemLoraDue(uint8_t beacon_index) {
+	if (!link_item_active(lora_rxInfo.tag_id))
+		return false;
+	uint8_t n = link_item.tag_listen_n;
+	if (n == 0 || HAL_GetTick() - link_item.listen_tick > 10000)
+		n = LCMD_LISTEN_GROUND;
+	return (beacon_index % n) == 0;
+}
+
+void Link_ItemFillCmd(sLoRaCmd *c) {
+	c->magic = LCMD_MAGIC;
+	c->tag_id = link_item.tag;
+	c->src = tx_poll_msg.src;
+	c->seq = link_item.seq;
+	c->item = link_item.item;
+	c->value = link_item.value;
+	c->spare = 0;
+	c->checksum = checksum((uint8_t*)c, sizeof(*c));
+	link_item.lora_tries++;
+}
+
+static void link_item_done(uint16_t readback, uint8_t flags, uint8_t via) {
+	link_item.readback = readback;
+	link_item.flags = flags;
+	link_item.via = via;
+	link_item.state = LITEM_DONE;
+}
+
+void Link_ItemOnLoraAck(const sLoRaAck *a) {
+	if (a->tag_id == link_item.tag) {
+		link_item.tag_listen_n = a->listen_n;
+		link_item.listen_tick = HAL_GetTick();
+	}
+	if (link_item.state == LITEM_PENDING && a->tag_id == link_item.tag && a->seq == link_item.seq
+			&& a->item == link_item.item)
+		link_item_done(a->value, a->flags, LITEM_VIA_LORA);
+}
+
+bool Link_ItemUwbDue(void) {
+	return link_st.tag_ver >= 2 && link_item_active(dwmInfo.tag_dest)
+			&& HAL_GetTick() - link_item.start_tick > LITEM_UWB_AFTER_MS;
+}
+
+void Link_ItemFillPoll(twr_anchor_ext2_msg_t *p) {
+	p->item_seq = link_item.seq;
+	p->item = link_item.item;
+	p->item_value = link_item.value;
+}
+
+void Link_ItemOnUwb(const twr_tag_ext2_msg_t *r) {
+	if (link_item.state == LITEM_PENDING && r->item == link_item.item && r->item_seq == link_item.seq
+			&& !(r->item_flags & LACK_F_APPLYING))
+		link_item_done(r->item_value, r->item_flags, LITEM_VIA_UWB);
+}
+
 // rx_power_dbm and first-path power, DW1000 UM 4.7.1/4.7.2 (PRF 64 MHz); N without the SFD
 // correction (< 0.4 dB at 2048 preamble symbols)
 static float link_rx_power_dbm(void) {
@@ -899,7 +1004,8 @@ void Link_OnExchange(uint8_t result, bool first, bool ext_poll, bool ext_resp) {
 	if (result == EX_NONE) {
 		if (!first)		// a repeat that goes unanswered (tag still re-arming) proves nothing
 			return;
-		if (++link_st.ext_miss >= 2) {	// extended polls go unanswered: legacy frames
+		// extended polls go unanswered: legacy frames (a bench level pin rides out a weak level)
+		if (++link_st.ext_miss >= ((link_cfg.uwb_level_pin < LINK_UWB_LEVELS) ? 20 : 2)) {
 			link_fallback();
 			return;
 		}
@@ -918,6 +1024,8 @@ void Link_OnExchange(uint8_t result, bool first, bool ext_poll, bool ext_resp) {
 	if (link_st.echo_uwb_level != link_st.uwb_level)
 		return;
 
+	if (link_cfg.uwb_level_pin < LINK_UWB_LEVELS)
+		return;		// pinned for a bench sweep
 	float rx = link_rx_power_dbm();
 	int target = link_cfg.uwb_target_dbm, band = link_cfg.uwb_band_db;
 	if (rx < target - band) {	// louder at once
