@@ -67,8 +67,8 @@ all: main-build
 main-build: bootloader_hitan.elf secondary-outputs
 
 # Tool invocations
-bootloader_hitan.elf bootloader_hitan.map: $(OBJS) $(USER_OBJS) C:\projects\HITAN_reut\hitan-stm-reut\bootloader\bootloader_hitan\STM32U5A5ZJTXQ_FLASH_MMT_TEMPLATE.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-gcc -o "bootloader_hitan.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m33 -T"C:\projects\HITAN_reut\hitan-stm-reut\bootloader\bootloader_hitan\STM32U5A5ZJTXQ_FLASH_MMT_TEMPLATE.ld" --specs=nosys.specs -Wl,-Map="bootloader_hitan.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv5-sp-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+bootloader_hitan.elf bootloader_hitan.map: $(OBJS) $(USER_OBJS) ../STM32U5A5ZJTXQ_FLASH_MMT_TEMPLATE.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-gcc -o "bootloader_hitan.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m33 -T"../STM32U5A5ZJTXQ_FLASH_MMT_TEMPLATE.ld" --specs=nosys.specs -Wl,-Map="bootloader_hitan.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv5-sp-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 

@@ -3,6 +3,12 @@
 #
 # Usage: tools/build.sh Anchor|Tag|bootloader_hitan [make args...]
 #
+#   tools/build.sh Anchor             # -> Anchor/Debug/Anchor.{elf,hex,bin}, app at 0x08200000
+#   tools/build.sh Tag                # -> Tag/Debug/Tag.{elf,hex,bin}, app at 0x08200000
+#   tools/build.sh bootloader_hitan   # -> bootloader_hitan/Debug/bootloader_hitan.{elf,hex,bin}, at 0x08000000
+#
+# Extra arguments go to make, e.g. `tools/build.sh Tag clean`.
+#
 # STM32CubeIDE writes Debug/objects.list itself; outside the IDE it is
 # regenerated here from $(OBJS) so newly added sources get linked.
 set -euo pipefail
