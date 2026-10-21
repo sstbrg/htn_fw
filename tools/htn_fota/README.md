@@ -72,8 +72,10 @@ of data, then the target writes flash, reboots, and the loader checks it.
   times) if anything differs. The bootloader checks the CRC again at boot.
 - The loader asks the rebooted target for its CRC and reports **Update OK**
   only if it matches the image.
-- A battery-powered target or loader refuses below 30 %. Boards on external
-  power report battery 255 and are always allowed.
+- A target or loader with a battery gauge refuses below 30 %. Tags always
+  have one; an anchor reports its gauge if a battery pack is wired to it.
+  Boards with no gauge (USB-powered anchors) report 255, shown as "no gauge",
+  and are always allowed.
 
 The one unrecoverable-over-the-air case is losing power during the few seconds
 of the flash write. The board then waits in its bootloader; flash it over USB

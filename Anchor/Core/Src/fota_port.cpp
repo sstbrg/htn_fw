@@ -10,6 +10,10 @@
 #include "Led.h"
 #include "usart.h"
 #include "stm32u5xx_it.h"
+#include "i2c.h"
+extern "C" {
+#include "rrc2040driver.h"	// C header without its own extern "C"
+}
 
 extern uint8_t HW_Version;
 
@@ -34,7 +38,7 @@ extern "C" uint8_t fota_port_hw(void)
 
 extern "C" uint8_t fota_port_battery(void)
 {
-	return 0xFF;	// anchors are externally powered
+	return RRC2040_Soc(&hi2c2);	// 0xFF = no gauge answered (USB/externally powered anchor)
 }
 
 extern "C" void fota_port_status_led(int on)

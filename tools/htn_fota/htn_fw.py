@@ -326,7 +326,7 @@ def cmd_discover(ser, a):
         print("no FOTA targets answered (they need 3.1.1+, and tags must be awake)")
         return 1
     for d in found:
-        batt = "mains" if d["battery"] == 255 else f"{d['battery']}%"
+        batt = "no gauge" if d["battery"] == 255 else f"{d['battery']}%"
         print(f"id {d['id']:5}  {d['kind']:6}  {d['sw']:10}  HW {d['hw']}  battery {batt:5}  app_crc {d['app_crc']:#010x}")
     return 0
 

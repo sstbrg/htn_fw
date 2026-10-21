@@ -27,7 +27,7 @@ import serial.tools.list_ports
 import fw_release
 import htn_fw
 
-MIN_BATTERY = 30        # % for battery-powered boards (tags); anchors report 255 = mains
+MIN_BATTERY = 30        # % for boards with a battery gauge; 255 = no gauge (USB/externally powered)
 KIND_NAME = {0: "anchor", 1: "tag"}
 RATE_NAMES = {"Auto: 6.8 Mbps, slower if the link drops": "6m8",
               "Auto from 850 kbps": "850k",
@@ -509,7 +509,7 @@ class Wizard(tk.Tk):
             self.found = {}
             want = self.release["kind"]
             for d in sorted(found, key=lambda d: (d["kind"] != want, d["id"])):
-                batt = "mains" if d["battery"] == 255 else f"{d['battery']}%"
+                batt = "no gauge" if d["battery"] == 255 else f"{d['battery']}%"
                 iid = self.tgt_tree.insert("", "end", values=(d["id"], d["kind"], d["sw"], d["hw"], batt,
                                                               f"0x{d['app_crc']:08x}"))
                 self.found[iid] = d
@@ -555,7 +555,7 @@ class Wizard(tk.Tk):
                 self.tinfo.configure(text="no answer")
                 return
             kind = KIND_NAME.get(s["t_kind"], "?")
-            batt = "mains" if s["t_battery"] == 255 else f"{s['t_battery']}%"
+            batt = "no gauge" if s["t_battery"] == 255 else f"{s['t_battery']}%"
             same = f"0x{s['t_app_crc']:08x}" == self.release["crc"]
             self.tinfo.configure(text=f"answered over UWB:\n  {kind} {tid}\n  firmware {s['t_sw']}\n  HW {s['t_hw']}\n"
                                       f"  battery {batt}\n  app CRC 0x{s['t_app_crc']:08x}")
