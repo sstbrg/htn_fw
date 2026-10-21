@@ -7,7 +7,8 @@
 Steps:
   1. Connect the board that will be the FOTA loader (any tag or anchor) to USB.
   2. Switch it to FOTA loader mode.
-  3. Pick a saved release (releases/<kind>/<version>/) or build a new one.
+  3. Pick a release (releases/<kind>/<version>/, or a release .zip dropped into releases/)
+     or build a new one.
   4. Reach the target: LoRa wake-up first, then UWB.
   5. Handshake, transfer, write, verify.
 
@@ -15,6 +16,7 @@ Serial ports are always opened at 921600 (the boards' only baud).
 """
 import json
 import queue
+import subprocess
 import threading
 import time
 import tkinter as tk
@@ -339,8 +341,9 @@ class Wizard(tk.Tk):
     # ---------------- step 3 ----------------
     def step_firmware(self):
         self.clear_body("Choose the firmware",
-                        "Pick a saved release, build a new one (bumps the version, builds and saves it under "
-                        "releases/), or browse for a .bin file.")
+                        "Pick a release. To add one, put its release .zip (or the unpacked folders) into the "
+                        "releases/ folder and press Refresh. You can also build a new one (bumps the version, "
+                        "builds and saves it under releases/) or browse for a .bin file.")
         cols = ("kind", "version", "size", "crc", "built", "note")
         self.rel_tree = ttk.Treeview(self.body, columns=cols, show="headings", height=9, selectmode="browse")
         for c, w in zip(cols, (60, 90, 80, 100, 150, 260)):
@@ -350,30 +353,24 @@ class Wizard(tk.Tk):
         self.rel_tree.bind("<<TreeviewSelect>>", self.on_pick_release)
         row = ttk.Frame(self.body)
         row.pack(fill="x", pady=6)
-        ttk.Button(row, text="Download latest from GitHub", command=self.fetch_github).pack(side="left")
-        ttk.Button(row, text="Build new release...", command=self.build_dialog).pack(side="left", padx=8)
-        ttk.Button(row, text="Browse .bin...", command=self.browse_bin).pack(side="left")
-        ttk.Button(row, text="Refresh", command=self.fill_releases).pack(side="left", padx=8)
+        ttk.Button(row, text="Refresh", command=self.fill_releases).pack(side="left")
+        ttk.Button(row, text="Open releases folder", command=self.open_releases).pack(side="left", padx=8)
+        ttk.Button(row, text="Build new release...", command=self.build_dialog).pack(side="left")
+        ttk.Button(row, text="Browse .bin...", command=self.browse_bin).pack(side="left", padx=8)
         self.fill_releases()
 
-    def fetch_github(self):
-        self.progress(30, "downloading the latest GitHub release...")
-
-        def job():
-            return fw_release.fetch(log=self.log)
-
-        def done(dirs):
-            self.progress(0, "idle")
-            if not dirs:
-                self.log("the latest GitHub release has no firmware assets", "warn")
-            self.fill_releases(select_dir=dirs[0] if dirs else None)
-            self.on_pick_release()
-        self.run(job, done)
+    def open_releases(self):
+        folder = fw_release.ROOT / "releases"
+        folder.mkdir(exist_ok=True)
+        try:
+            subprocess.Popen(["xdg-open", str(folder)])
+        except OSError:
+            messagebox.showinfo("Releases folder", str(folder))
 
     def fill_releases(self, select_dir=None):
         self.rel_tree.delete(*self.rel_tree.get_children())
         self.rels = {}
-        for d in fw_release.releases():
+        for d in fw_release.releases(log=self.log):
             iid = self.rel_tree.insert("", "end", values=(d["kind"], d["version"], d["size"], d["crc"],
                                                           d["built"].replace("T", " "), d.get("note", "")))
             self.rels[iid] = d
@@ -413,7 +410,6 @@ class Wizard(tk.Tk):
         kind = tk.StringVar(value=self.loader_target_kind_guess())
         part = tk.StringVar(value="patch")
         note = tk.StringVar()
-        publish = tk.BooleanVar(value=False)
         ttk.Label(f, text="Board").grid(row=0, column=0, sticky="w")
         ttk.Combobox(f, textvariable=kind, values=("anchor", "tag"), state="readonly", width=10).grid(row=0, column=1, sticky="w")
         cur = ttk.Label(f, text="")
@@ -423,8 +419,6 @@ class Wizard(tk.Tk):
                      width=12).grid(row=1, column=1, sticky="w")
         ttk.Label(f, text="Changelog note").grid(row=2, column=0, sticky="w")
         ttk.Entry(f, textvariable=note, width=50).grid(row=2, column=1, columnspan=2, sticky="we")
-        ttk.Checkbutton(f, variable=publish, text="Also publish on GitHub (commits the version bump, pushes, "
-                        "CI builds and publishes the release)").grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
         def refresh(*_):
             cur.configure(text=f"current: {fw_release.version_string(kind.get())}")
@@ -432,7 +426,7 @@ class Wizard(tk.Tk):
         refresh()
 
         def go():
-            k, pt, nt, pub = kind.get(), part.get(), note.get().strip() or None, publish.get()
+            k, pt, nt = kind.get(), part.get(), note.get().strip() or None
             dlg.destroy()
             self.progress(0, f"building {k}...")
 
@@ -443,21 +437,14 @@ class Wizard(tk.Tk):
                 if not fw_release.build(k, log=self.log):
                     raise RuntimeError(f"{k} build failed (see log)")
                 self.progress(85, "saving release...")
-                out = fw_release.save(k, nt, log=self.log)
-                if pub:
-                    self.progress(92, "publishing on GitHub...")
-                    try:
-                        self.log(fw_release.publish(k, log=self.log), "ok")
-                    except Exception as e:  # the local release is still usable
-                        self.log(f"GitHub publish failed: {e}", "err")
-                return out
+                return fw_release.save(k, nt, log=self.log)
 
             def done(out):
                 self.progress(100, f"release saved: {out.name}")
                 self.fill_releases(select_dir=out)
                 self.on_pick_release()
             self.run(job, done)
-        ttk.Button(f, text="Build", command=go, style="Big.TButton").grid(row=4, column=2, sticky="e", pady=(12, 0))
+        ttk.Button(f, text="Build", command=go, style="Big.TButton").grid(row=3, column=2, sticky="e", pady=(12, 0))
 
     def loader_target_kind_guess(self):
         return self.release["kind"] if self.release else "anchor"

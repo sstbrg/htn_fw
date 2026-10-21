@@ -146,9 +146,25 @@ extern "C" {
  * anc3.1.3	[added] FOTA LEDs: target blinks from the handshake, loader link LED while loading
  * anc3.1.4	[fixed] a tag stays awake while it counts down as FOTA target
  * anc3.1.5	[added] backoff arm-once, release on opcode 19=0, runtime window {top,min}; status backoff in ms left; per-anchor random seed; imposter id mask; SET_ID refreshes UWB ids; UART error callback re-arms RX; antenna delays from flash (opcode 20); LDE_CFG1 survives dwConfig; status-bit clearing and frame-length checks
+ * anc3.2.0	[added] doc section 9 link adaptation, every feature off by default (opcode 22 SET_LINK_FEATURES);
+ * 				with the mask clear, frames and replies are byte-identical to anc3.1.5.
+ * 				9A LDE_PPINDX/RXPACC_NOSAT/tick latched with the diagnostics; 9B CIR window (opcode 21);
+ * 				9C tick, tag power echo, SignalRssiPkt in SEARCH_TWR; 9D negotiated tag TX power over
+ * 				extended UWB frames, used only after the tag answers a hello (any version mix keeps
+ * 				ranging); 9F repeats, shortest range; 9G LOS/NLOS LDE preset; 9K frozen with two stations.
+ * 				9E/9H/9J profiles not implemented.
+ * 				[fixed] bug list 2026-10-22: TIM4 is a true 1 ms tick (was 2.05 ms; timings kept, opcode-19
+ * 				bytes read as old ticks); Error_Handler resets; LoRa DIO1 below TIM4 and Lora_Status masks
+ * 				only DIO1; lost LoRa TX/RX interrupt recovery; rxError consumed; no_uwb not latched, bounded
+ * 				DW1000 re-init; wrap-safe backoff deadlines.
+ * 				[fixed] imposter response timestamp uses the applied TX antenna delay (was the default);
+ * 				[added] DW1000 crystal trim in flash (opcode 23); 9F/9G only above -90 dBm.
+ * 				[added] 9G preset sent to the tag in the extended poll; extended frames also with 9G alone.
+ * 				[added] configuration channel (opcode 24): LoRa commands (inverted IQ) into the tag's listen
+ * 				slots, extended UWB poll v2 as backup; beacon parse checks GetPayload; bench UWB level pin.
  */
 
-#define VERSION "anc3.1.5"
+#define VERSION "anc3.2.0"
 
 
 #define IS_TAG false
@@ -183,6 +199,7 @@ typedef struct {
     uint8_t buffer_length;
     int8_t rssi;  // average rssi
     int8_t snr;
+    int8_t signal_rssi;  // SignalRssiPkt: LoRa signal after despreading, without in-band noise
     uint16_t tag_id;
     uint16_t tag_id_msg_valid; // used to checkout if the twr new id request is valid with tag_id_msg_valid anchor is already holding.
     uint8_t tag_soc;
@@ -237,7 +254,152 @@ typedef struct {
     uint32_t RxCounter;
     bool uart_income;
     bool tag_imposter;
+
+    // Latched with the diagnostics on each valid range (dwRange), before RX re-arms
+    uint16_t lde_ppindx;        // LDE_PPINDX (0x2E:1000), peak path index
+    uint16_t rxpacc_nosat;      // RXPACC_NOSAT (0x27:2C)
+    uint32_t exchange_tick_ms;  // HAL_GetTick() when the response frame was received
+    int8_t   tag_lora_tx_dbm;   // tag's echo: LoRa power it is using, LINK_LORA_UNKNOWN if none
+    uint8_t  tag_uwb_tx_level;  // tag's echo: UWB level of this response, LINK_UWB_UNKNOWN if none
+    uint16_t cir_fp_index;      // FP_INDEX (Q10.6) the CIR window was taken around
+    uint16_t cir_start;         // first accumulator sample of the window
+    uint8_t  cir_n;             // samples in the window, 0 = nothing latched yet
+    uint8_t  cir_buf[1 + 4 * 32];   // dummy octet + n x (i16 re, i16 im)
 } DwmInfo_t;
+
+#define CIR_WINDOW_N    32      // samples latched around the first path (opcode 21)
+#define CIR_WINDOW_PRE  8       // samples before the first path
+
+/* Link adaptation (doc section 9, opcode 22 SET_LINK_FEATURES). Every feature ships off; with the
+ * mask clear the anchor sends and answers exactly what anc3.1.5 did. Rule zero: the link is never
+ * lost - every adaptive step fails toward maximum power on the legacy frames. */
+#define LINK_F_REPEATS      0x01    // 9F: K exchanges per SEARCH_TWR, shortest range reported
+#define LINK_F_LDE_AUTO     0x02    // 9G: LOS/NLOS LDE preset from RX-FP
+#define LINK_F_POWER        0x04    // 9D: negotiated tag TX power
+#define LINK_F_PROFILE      0x08    // 9H: not implemented, profile stays 0
+#define LINK_F_CHAN_ALT     0x10    // 9E: not implemented
+#define LINK_F_CIR          0x20    // 9B: latch the CIR window (opcode 21)
+#define LINK_F_REPLY_EXT    0x40    // 9A/9C: extra reply fields and the STATUS link_state block
+
+#define LINK_LORA_MAX_DBM   22
+#define LINK_LORA_MIN_DBM   (-9)    // SX1262 high-power PA floor
+#define LINK_LORA_STEP_DB   2
+#define LINK_LORA_UNKNOWN   0x7F    // replies: unknown / not requested
+#define LINK_LORA_MIN_SNR   (-7)    // below this SNR LoRa only steps up: SF12 decodes to -20 dB, so this keeps
+                                    // the 10 dB margin after one more 2 dB step (SNR reads only 3-4 dB near compression)
+#define LINK_UWB_LEVELS     8       // level 0 = maximum, each level 3 dB lower
+#define LINK_UWB_UNKNOWN    0xFF
+#define LINK_UWB_SENS_DBM   (-106)  // DW1000 110 kbps sensitivity: never step below it + 10 dB margin
+#define LINK_UWB_LOST_MS    1000    // no UWB response this long: everything back to maximum
+#define LINK_LORA_LOST_MS   1500    // no LoRa packet this long (packets ~0.55 s apart): LoRa maximum
+#define LINK_EXT_HOLD_MS    5000    // after falling back to legacy frames, no hello for this long
+#define LINK_TRIES          5       // polls a request or a confirm is repeated before giving up
+#define LINK_RXFP_SOFT_DB   6.0f    // RX-FP soft threshold (APS006): above it, likely NLOS
+#define LINK_LDE_HOLD       10      // exchanges beyond the threshold before the LDE preset flips
+#define LINK_LDE_NLOS       0x67    // NTM 7 / PMULT 3 (APS006 Pt 2)
+#define LINK_K_MAX          5
+#define LINK_STRONG_DBM     (-90.0f) // 9F/9G act only above this rx level: near sensitivity (km range) RX-FP is
+                                    // high from noise, the NLOS threshold and "keep the shortest" would pick noise
+
+typedef struct {            // opcode 22 payload, in order
+    uint8_t features;
+    uint8_t k_max;          // 9F: 0 = anchor decides, 1-5 = fixed
+    int8_t  lora_target_dbm;
+    uint8_t lora_band_db;
+    int8_t  uwb_target_dbm;
+    uint8_t uwb_band_db;
+    uint8_t profile_max;    // 9H, stored only
+    uint8_t profile_override;
+    uint8_t step_interval_ds;   // minimum time between steps away from robustness, 0.1 s
+    uint8_t lora_owner;     // 1 = this anchor runs the LoRa loop (one per station)
+    uint8_t uwb_level_pin;  // bench: fixed UWB level for the tag's responses (needs bit2), 0xFF = automatic
+} LinkCfg_t;
+
+typedef struct {
+    // extended frames
+    uint8_t  ext;           // tag answered the hello: extended polls in use
+    uint8_t  tag_ver;       // the tag's link version from its hello answer (1 = tag3.2.0)
+    uint8_t  ext_miss;      // consecutive unanswered extended polls
+    uint8_t  ext_hold;      // fell back from extended frames: no hello for LINK_EXT_HOLD_MS
+    uint32_t ext_hold_tick;
+    uint16_t ext_tag;       // tag the state belongs to
+    uint8_t  reverting;     // feature switched off: asking for maximum until the tag shows it
+    uint8_t  revert_tries;
+    // UWB loop: one level per exchange, this anchor only
+    uint8_t  uwb_level;     // level the last poll asked for
+    uint8_t  uwb_prev;      // level before the last step
+    uint8_t  uwb_good;      // good responses since the last step
+    uint8_t  uwb_miss;      // consecutive unanswered polls
+    uint8_t  uwb_mismatch;
+    uint8_t  uwb_floor;     // quietest level the tag can do (fewer levels on boards with a lower maximum)
+    uint32_t uwb_step_tick;
+    // LoRa loop, owner only: request / ack / confirm / proof (9J)
+    uint8_t  seq;
+    uint8_t  lora_phase;    // LINK_LP_*
+    int8_t   lora_cur;      // power the tag reports in use
+    int8_t   lora_req;      // power requested under seq
+    uint8_t  lora_tries;
+    uint8_t  lora_good;     // LoRa packets since the last completed step
+    uint32_t lora_step_tick;
+    // last seen from the tag
+    uint8_t  ack_seq;
+    int8_t   echo_lora_dbm;
+    uint8_t  echo_uwb_level;
+    uint8_t  echo_profile;
+    uint8_t  echo_pending;
+    uint8_t  echo_lde_nlos; // the tag runs the NLOS LDE preset
+    uint32_t last_uwb_tick;
+    uint32_t last_lora_tick;
+    // 9F / 9G
+    uint32_t coexist_tick;  // last time the tag reported two stations or this anchor's backoff was armed (9K)
+    uint8_t  lde_nlos;      // NLOS preset active
+    uint8_t  lde_count;
+    float    last_rxfp_db;
+    float    last_rx_dbm;
+    uint8_t  k_used;
+} LinkState_t;
+
+#define LINK_LP_IDLE    0
+#define LINK_LP_REQ     1   // quieter request sent, waiting for the ack
+#define LINK_LP_CONF    2   // confirm sent, waiting for the tag to show the new power
+#define LINK_LP_UP      3   // louder request sent (applied at once), waiting for the echo
+
+/* One configuration item for one tag at a time (opcode 24 TAG_CONFIG): LoRa first, the extended
+ * UWB poll v2 as backup once LoRa has not answered for LITEM_UWB_AFTER_MS. */
+#define LITEM_IDLE          0
+#define LITEM_PENDING       1
+#define LITEM_DONE          2
+#define LITEM_FAILED        3
+#define LITEM_UWB_AFTER_MS  3000
+#define LITEM_GIVE_UP_MS    60000
+#define LITEM_VIA_LORA      1
+#define LITEM_VIA_UWB       2
+typedef struct {
+    uint8_t  state;         // LITEM_IDLE / PENDING / DONE / FAILED
+    uint16_t tag;
+    uint8_t  item;
+    uint16_t value;
+    uint8_t  seq;
+    uint16_t readback;
+    uint8_t  flags;         // LACK_F_* from the answer
+    uint8_t  via;           // LITEM_VIA_* that answered
+    uint8_t  lora_tries;
+    uint8_t  tag_listen_n;  // the tag's listen period from its last ack (0 = unknown)
+    uint32_t listen_tick;
+    uint32_t start_tick;
+} LinkItem_t;
+extern LinkItem_t link_item;
+bool Link_ItemQueue(uint16_t tag, uint8_t item, uint16_t value);
+bool Link_ItemLoraDue(uint8_t beacon_index);	// send the command after this beacon?
+
+extern LinkCfg_t link_cfg;
+extern LinkState_t link_st;
+uint32_t Backoff_Left(void);	// ms left, wrap-safe; clears an expired deadline
+#define BACKOFF_MAX_MS		2000	// a deadline further out than this is not a real backoff
+void Link_Init(void);
+bool Link_Coexisting(void);
+void Link_SetConfig(const uint8_t *cfg, uint8_t len);
+void Link_OnLoraPacket(int8_t signal_rssi_dbm, int8_t snr_db);
 
 typedef struct {
     uint8_t rf_info[RX_FINFO_LEN];
@@ -269,6 +431,64 @@ void write_clear_bkup_sram(void);
 void write_bkup_sram(void);
 void SetAnchor_cable_id();
 void SetAnchor_self_id();
+/* Configuration channel (doc 9J/9L): requests reach the tag over LoRa (primary) and over the
+ * extended UWB poll (backup), through one handler on the tag. LoRa commands and acks are sent with
+ * inverted IQ: a normal-IQ receiver (every anchor listening for beacons, and all older firmware)
+ * never demodulates them, so they cannot be mistaken for a beacon. The tag listens for a short
+ * window after a beacon whose counter is a multiple of its listen period (every beacon while UWB
+ * is silent, every 4th while extended UWB polls arrive, every 20th otherwise); anchors send only
+ * into windows that fall on a multiple of 4, which every period above lands on. Items change
+ * only what cannot cut the link; a lost command delays a change, it never changes how the tag
+ * communicates. */
+#define LCMD_MAGIC          0xC3
+#define LACK_MAGIC          0xA5
+#define LCMD_SLOT_MOD       4       // anchors send after beacons with msg_index % 4 == 0
+#define LCMD_LISTEN_GROUND  20      // tag listen period at rest (multiple of LCMD_SLOT_MOD)
+#define LCMD_LISTEN_ACTIVE  4       // while extended UWB polls arrive
+#define LCMD_LISTEN_MS      150     // RX window until a preamble shows (timer stops on preamble)
+#define LCMD_EXCHANGE_MS    1500    // guard on a whole command or ack reception
+
+#define LITEM_NOP           0       // ping: ack carries the state
+                                    // 1: reserved (the LDE preset follows 9G in every extended poll)
+#define LITEM_LISTEN_N      2       // tag listen period 1..255 (back to 20 after 30 s without commands)
+#define LITEM_ANT_TX        3       // TX antenna delay, flash; 0xFFFF = default
+#define LITEM_ANT_RX        4       // RX antenna delay, flash; 0xFFFF = default
+#define LITEM_XTAL          5       // DW1000 crystal trim 0..31, flash; 0xFF = clear
+#define LITEM_NONE          0xFF    // extended poll v2: no item
+
+#define LACK_F_REJECTED     0x01    // value out of range: nothing changed
+#define LACK_F_LDE_NLOS     0x02
+#define LACK_F_MULTI        0x04    // two stations: adaptation items held at the ground state
+#define LACK_F_PENDING      0x08    // a quieter LoRa power request waits for its confirm
+#define LACK_F_APPLYING     0x10    // UWB path: taken, applied after this response; the next answer has the read-back
+
+#pragma pack(push, 1)
+typedef struct {
+    uint8_t  magic;         // LCMD_MAGIC
+    uint16_t tag_id;
+    uint16_t src;           // sending anchor's id
+    uint8_t  seq;           // item sequence number (a repeat is answered, not re-applied)
+    uint8_t  item;
+    uint16_t value;
+    uint8_t  spare;
+    uint8_t  checksum;      // sum of the bytes before it
+} sLoRaCmd;                 // 11 bytes: the same 13 LoRa symbols as a 6-byte beacon at SF12
+
+typedef struct {
+    uint8_t  magic;         // LACK_MAGIC
+    uint16_t tag_id;
+    uint8_t  seq;           // the command answered
+    uint8_t  item;
+    uint16_t value;         // read-back after applying
+    int8_t   lora_dbm;      // LoRa power in use
+    uint8_t  flags;         // LACK_F_*
+    uint8_t  listen_n;      // listen period in force
+    uint8_t  checksum;
+} sLoRaAck;                 // 11 bytes
+#pragma pack(pop)
+void Link_ItemFillCmd(sLoRaCmd *c);
+void Link_ItemOnLoraAck(const sLoRaAck *a);
+
 /* USER CODE END ET */
 
 /* Exported constants --------------------------------------------------------*/

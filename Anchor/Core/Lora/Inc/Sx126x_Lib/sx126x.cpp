@@ -450,7 +450,9 @@ void SX126x::SetTxParams( int8_t power, RadioRampTimes_t rampTime )
 	uint8_t buf[2];
 
 	SetPaConfig( 0x04, 0x07, 0x00, 0x01 );
-	power = 22;
+	// SX1262 high-power PA: -9..22 dBm (was forced to 22; the tag's power now follows the anchor's request)
+	if( power > 22 ) power = 22;
+	if( power < -9 ) power = -9;
 	WriteReg( REG_OCP, 0x38 ); // current max 160mA for the whole device
 	buf[0] = power;
 	buf[1] = RADIO_RAMP_200_US;

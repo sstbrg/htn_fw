@@ -7,7 +7,7 @@ and build and archive firmware releases.
 |---|---|
 | `fw_wizard.py` | Step-by-step GUI for over-the-air updates. Start here. |
 | `htn_fw.py` | Command line: board status, USB flashing, FOTA, discovery. |
-| `fw_release.py` | Bump the version, build, and save releases; download GitHub releases. |
+| `fw_release.py` | Bump the version, build, and save releases; import release zips. |
 
 ## Setup
 
@@ -47,10 +47,10 @@ be any tag or anchor running 3.1.0 or newer. The board you update (the
    Pick it in the list. A battery-powered loader needs at least 30 %.
 2. **FOTA loader mode.** Press **Enable FOTA loader mode**. The loader stops its
    normal work and its status LED blinks fast (on anchors: a battery-bar LED).
-3. **Choose firmware.** Pick a saved release, press **Download latest from
-   GitHub**, **Build new release...**, or **Browse .bin...**. In **Build new
-   release...**, tick **Also publish on GitHub** to commit the version bump,
-   push, and have CI publish the release (see Releases below).
+3. **Choose firmware.** Pick a release from the list. To add a release, put
+   its `htn-fw-anc<ver>-tag<ver>.zip` (or the folders inside it) into the
+   `releases/` folder (**Open releases folder**) and press **Refresh**. You
+   can also **Build new release...** or **Browse .bin...**.
 4. **Find the target.** Press **Scan for targets**. Every board in UWB range
    answers with its id, type, firmware and battery. Pick the one to update.
    Boards on 3.1.0 don't answer a scan: type their id and press **Connect**.
@@ -146,24 +146,25 @@ itself is updated.
 $PY tools/htn_fota/fw_release.py list
 $PY tools/htn_fota/fw_release.py new anchor --part patch --note "what changed"   # bump + build + save
 $PY tools/htn_fota/fw_release.py build tag                                        # build + save, no bump
-$PY tools/htn_fota/fw_release.py fetch                                            # latest GitHub release
-$PY tools/htn_fota/fw_release.py publish anchor                                   # commit bump, push, CI publishes
+$PY tools/htn_fota/fw_release.py import                                           # unpack zips put into releases/
 ```
 
 A release is saved under `releases/<anchor|tag>/<version>/` with the `.bin`,
 `.hex`, `.elf`, `.map` and a `manifest.json` (version, bootloader CRC, size,
 sha256, git commit, toolchain). `releases/` is not in git.
 
-On GitHub, every pull request to `main` builds both boards and fails if Anchor
-or Tag code changed without a version bump. Merging creates a release
-`fw-anc<ver>-tag<ver>` with the images; `fetch` and the wizard download it.
+Official releases are built by CI from `main`. Every merged pull request
+publishes a GitHub release `fw-anc<ver>-tag<ver>` with one asset,
+`htn-fw-anc<ver>-tag<ver>.zip`, holding `anchor/<ver>/` and `tag/<ver>/`
+(`.bin`, `.hex`, `.elf`, `manifest.json`). To use it, download the zip from the
+release page and put it, or its unpacked contents, into `releases/`; the tools
+never contact GitHub themselves. Zips are checked against each image's sha256
+when imported.
 
-`publish` (and the wizard's **Also publish on GitHub**) releases what is
-committed, never a local build: it refuses if other firmware changes are
-uncommitted, commits the version bump as `release: <version>`, and pushes. On
-`main` the push publishes the release; on any other branch it starts the CI
-workflow by hand and the release is a pre-release. Starting the workflow by
-hand only works once `.github/workflows/firmware.yml` is on `main`.
+On every pull request, CI builds both boards and checks the versions: an image
+that differs from the image already released under the same version fails the
+check and needs a VERSION bump (`fw_release.py bump`); an identical image (for
+example after a comment-only change) keeps its version.
 
 Building by hand: `tools/build.sh Anchor`, `tools/build.sh Tag`,
 `tools/build.sh bootloader_hitan` (outputs in `<Project>/Debug/`).

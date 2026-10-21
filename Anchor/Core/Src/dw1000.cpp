@@ -13,6 +13,8 @@ static uint64 resp_tx_ts;
 
 /* Frames used in the ranging process. See NOTE 3 below. */
 twr_anchor_msg_t tx_poll_msg;
+twr_anchor_ext_msg_t tx_poll_ext;
+twr_anchor_ext2_msg_t tx_poll_ext2;
 twr_tag_msg_t rx_resp_msg;
 twr_tag_msg_t tx_resp_msg;
 uint8_t dummy_buff[1024] = {0};
@@ -26,18 +28,24 @@ uint8_t lde_cfg1 = 0x6D;	// LOS default; live-tunable via opcode 14 (LDE_IF_ID:L
 dwt_rxdiag_t diagnostics;
 
 
+static bool dw_init_ok = false;	// dwt_initialise() succeeded and dwConfig() ran since
+static uint32_t dw_retry_tick = 0;
+
 int dwmInit() {
 	/* Reset and initialise DW1000.
 	 * For initialisation, DW1000 clocks must be temporarily set to crystal speed. After initialisation SPI rate can be increased for optimum
 	 * performance. */
 	reset_DW1000(); /* Target specific drive of RSTn line into DW1000 low for a period. */
 	port_set_dw1000_slowrate();
+	dw_init_ok = false;
 	if (dwt_initialise(DWT_LOADUCODE) == DWT_ERROR) {
 		dwmInfo.no_uwb = true;
 		return 0;
 	}
 
 	dwmInfo.no_uwb = false;
+	dw_init_ok = true;
+	dwApplyXtalTrim();
 	dwSetFrameIds();
 
 	return 1;
@@ -52,11 +60,25 @@ void dwSetFrameIds(void) {
 	tx_resp_msg.src = id & 0x7FFF;
 }
 
+// Crystal trim: self-id flash page slot 3, 0..31; 0xFFFF = keep what dwt_initialise() loaded
+// (the chip's OTP trim, or mid-range 0x10 when the OTP has none).
+void dwApplyXtalTrim(void) {
+	uint16_t t = ((const uint16_t*)FLASH_SELF_ID_ADDRESS)[3];
+	if (t <= FS_XTALT_MASK)
+		dwt_setxtaltrim((uint8_t)t);
+}
+
+// TX antenna delay in force. A delayed response computes its own TX timestamp (programmed time +
+// this), so it must be the applied value: with the compile-time default a calibrated TX delay had
+// no effect on the range.
+static uint16_t tx_ant_dly = TX_ANT_DLY;
+
 // Antenna delays: self-id flash page slots 1 (TX) and 2 (RX); 0 or 0xFFFF = not calibrated
 void dwApplyAntennaDelays(void) {
 	const uint16_t *page = (const uint16_t*)FLASH_SELF_ID_ADDRESS;
 	uint16_t tx = page[1], rx = page[2];
-	dwt_settxantennadelay((tx == 0 || tx == 0xFFFF) ? TX_ANT_DLY : tx);
+	tx_ant_dly = (tx == 0 || tx == 0xFFFF) ? TX_ANT_DLY : tx;
+	dwt_settxantennadelay(tx_ant_dly);
 	dwt_setrxantennadelay((rx == 0 || rx == 0xFFFF) ? RX_ANT_DLY : rx);
 }
 
@@ -69,8 +91,22 @@ void dwmStatus() {
 		dwmInfo.no_uwb = true;
 	}
 	else{
-		dwmInfo.no_uwb = false;//
+		dwmInfo.no_uwb = !dw_init_ok;	// a valid id on a chip that never initialised is not usable
 	}
+}
+
+// Main loop: with no_uwb set, check again every 5 s - a valid id on an initialised chip clears it,
+// anything else gets a full re-initialisation. Without this one bad read disabled UWB until reset.
+void dwRecover(void) {
+	if (!dwmInfo.no_uwb || HAL_GetTick() - dw_retry_tick < 5000)
+		return;
+	dw_retry_tick = HAL_GetTick();
+	if (dw_init_ok && dwt_readdevid() == DWT_DEVICE_ID) {
+		dwmInfo.no_uwb = false;
+		return;
+	}
+	if (dwmInit())
+		dwConfig(&config);
 }
 
 void dwt_configenable_user_accumem_read(bool bit_set){
@@ -137,7 +173,7 @@ void dwConfig(dwt_config_t *config) {
 
 #ifdef NEW_NTM
 			//set lower SNR for NLOS operation
-			dwt_write8bitoffsetreg(LDE_IF_ID, LDE_CFG1_OFFSET, lde_cfg1); //refer user manual pg.175; keeps a live-tuned value
+			dwt_write8bitoffsetreg(LDE_IF_ID, LDE_CFG1_OFFSET, dwLdeCfg1()); //refer user manual pg.175; live-tuned value or the 9G NLOS preset
 			dwt_write16bitoffsetreg(LDE_IF_ID, LDE_CFG2_OFFSET, 0x0003); //refer user manual pg.177*/
 			//printf("0x2E = %x\n\r",dwt_read32bitreg(LDE_IF_ID));
 		#endif
@@ -178,7 +214,7 @@ void dwScanMode(void) {
 	if ((status_reg & SYS_STATUS_RXFCG) && !(status_reg & SYS_STATUS_ALL_DF_CLK)) {
 
 		uint32 frame_len;
-		twr_tag_msg_t rx_buffer;
+		twr_tag_ext2_msg_t rx_buffer;	// any UWB frame up to an extended v2 response
 
 		/* Clear good RX frame event in the DW1000 status register. */
 		dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_RXFCG);
@@ -221,9 +257,11 @@ void dwScanMode(void) {
 		// Arm once per busy period: a running backoff is left alone by both own and foreign frames,
 		// so it always expires and the next SEARCH_TWR goes out (bounded wait). An expired
 		// deadline counts as idle and can re-arm on the next foreign frame.
-		bool running = (dwmInfo.backoff_timer != 0) && (dwmInfo.backoff_timer > _1ms_tick);
+		bool running = Backoff_Left() != 0;
 		if (!dwmInfo.detec_pc_id && !running){
-			dwmInfo.backoff_timer = _1ms_tick + random() % backoff_top_ms + backoff_min_ms;
+			uint32_t deadline = _1ms_tick + random() % backoff_top_ms + backoff_min_ms;
+			dwmInfo.backoff_timer = deadline ? deadline : 1;	// 0 means "not backing off"
+			link_st.coexist_tick = HAL_GetTick();	// 9K: another station is on the air
 		}
 
 	} else {
@@ -248,9 +286,28 @@ void dwScanMode(void) {
 char errors_cnt[32] = {0};
 dwt_deviceentcnts_t counters;
 
+// dwExchange() results
+#define EX_NONE		0	// no frame from the tag
+#define EX_FRAME	1	// the tag answered, but no usable range
+#define EX_VALID	2	// valid range
+
+static uint8_t dwExchange(bool first);
+
 int dwRange(void) {
+	dwExchange(true);
+	return 0;
+}
+
+/* One SS-TWR exchange. Legacy poll unless the tag has shown it understands the extended one
+ * (see LINK_HELLO in dw1000.h); the link logic sees every outcome. */
+static uint8_t dwExchange(bool first) {
+	uint8_t result = EX_NONE;
 	dwmInfo.dw_ready = DW_NO_VALID_DATA;
 	dwmInfo.distance = 0;
+
+	Link_BeforePoll();
+	bool ext_poll = link_st.ext;
+	bool hello = false;
 
 	tx_poll_msg.des = dwmInfo.tag_dest;
 
@@ -262,8 +319,25 @@ int dwRange(void) {
 	rx_resp_msg.msd_index = frame_seq_nb;
 
 	dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_TXFRS);
-	dwt_writetxdata(sizeof(tx_poll_msg), (uint8_t*)&tx_poll_msg, 0); /* Zero offset in TX buffer. */
-	dwt_writetxfctrl(sizeof(tx_poll_msg), 0, 1); /* Zero offset in TX buffer, ranging. */
+	if (ext_poll) {
+		memcpy((uint8_t*)&tx_poll_ext, (const uint8_t*)&tx_poll_msg, ALL_MSG_COMMON_LEN);	// flag, ids and sequence number
+		tx_poll_ext.i9 = LINK_EXT_MARK;
+		Link_FillExtPoll(&tx_poll_ext);
+		if (Link_ItemUwbDue()) {	// v2: the same, plus the configuration item (backup path)
+			memcpy((uint8_t*)&tx_poll_ext2, (const uint8_t*)&tx_poll_ext, sizeof(twr_anchor_ext_msg_t) - 2);
+			Link_ItemFillPoll(&tx_poll_ext2);
+			dwt_writetxdata(sizeof(tx_poll_ext2), (uint8_t*)&tx_poll_ext2, 0);
+			dwt_writetxfctrl(sizeof(tx_poll_ext2), 0, 1);
+		} else {
+			dwt_writetxdata(sizeof(tx_poll_ext), (uint8_t*)&tx_poll_ext, 0);
+			dwt_writetxfctrl(sizeof(tx_poll_ext), 0, 1);
+		}
+	} else {
+		hello = Link_WantHello();
+		tx_poll_msg.i9 = hello ? LINK_HELLO : ANCHOR_FLAG;	// 0xE0 is what anc3.1.5 sends
+		dwt_writetxdata(sizeof(tx_poll_msg), (uint8_t*)&tx_poll_msg, 0); /* Zero offset in TX buffer. */
+		dwt_writetxfctrl(sizeof(tx_poll_msg), 0, 1); /* Zero offset in TX buffer, ranging. */
+	}
 
 	/* Start transmission, indicating that a response is expected so that reception is enabled automatically after the frame is sent and the delay
 	 * set by dwt_setrxaftertxdelay() has elapsed. */
@@ -275,13 +349,6 @@ int dwRange(void) {
 
 	status_reg = dwt_read32bitreg(SYS_STATUS_ID); // workaround to fix weird behavior.
 
-//	while (!((status_reg = dwt_read32bitreg(SYS_STATUS_ID))
-//			& (SYS_STATUS_RXFCG | SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR | SYS_STATUS_ALL_DF_CLK))) {
-//		 if ((_1ms_tick - SavedTimer) > THRESHOLD_MS) {
-//			 break;
-//		 }
-//
-//	};
 	while (1){
 		status_reg = dwt_read32bitreg(SYS_STATUS_ID);
 
@@ -301,7 +368,7 @@ int dwRange(void) {
 
 	if ((status_reg & SYS_STATUS_RXFCG) && !(status_reg & SYS_STATUS_ALL_DF_CLK)) {
 		uint32 frame_len;
-		twr_tag_msg_t rx_buffer;
+		twr_tag_ext2_msg_t rx_buffer;	// legacy, extended or extended v2 response; the legacy part is common
 		/* Clear good RX frame event in the DW1000 status register. */
 		dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_RXFCG);
 
@@ -313,25 +380,29 @@ int dwRange(void) {
 		else {
 			dummy_buff[0]++;
 			dwt_readrxdata(&dummy_buff[1], frame_len,0);
-			return 0;
+			Link_OnExchange(EX_NONE, first, ext_poll, false);
+			return EX_NONE;		// no sequence step, as anc3.1.5
 		}
 
 		/* Check that the frame is the expected response from the companion "SS TWR responder" example.
 		 * As the sequence number field of the frame is not relevant, it is cleared to simplify the validation of the frame. */
-		if (memcmp((uint8_t*)&rx_buffer, (uint8_t*)&rx_resp_msg, ALL_MSG_COMMON_LEN) == 0) {
+		if (frame_len >= sizeof(twr_tag_msg_t)
+				&& memcmp((uint8_t*)&rx_buffer, (uint8_t*)&rx_resp_msg, ALL_MSG_COMMON_LEN) == 0) {
 			dwmInfo.RxCounter++;
+			result = EX_FRAME;
 			uint32 poll_tx_ts, resp_rx_ts, poll_rx_ts, resp_tx_ts;
 			int32 rtd_init, rtd_resp;
 			float clockOffsetRatio;
-			dwmInfo.tag_no_lora = rx_buffer.tag_no_lora;
+			bool ext_resp = ext_poll && (frame_len == sizeof(twr_tag_ext_msg_t) || frame_len == sizeof(twr_tag_ext2_msg_t));
+			Link_OnResponse((const twr_tag_ext_msg_t*)&rx_buffer, ext_poll, ext_resp, hello);
+			if (ext_resp && frame_len == sizeof(twr_tag_ext2_msg_t))
+				Link_ItemOnUwb(&rx_buffer);
 			/* Retrieve poll transmission and response reception timestamps. See NOTE 9 below. */
 			poll_tx_ts = dwt_readtxtimestamplo32();
 			resp_rx_ts = dwt_readrxtimestamplo32();
+			uint32_t rx_tick = HAL_GetTick();
 
 			/* Read carrier integrator value and calculate clock offset ratio. See NOTE 11 below. */
-//			clockOffsetRatio = dwt_readcarrierintegrator()
-//					* (FREQ_OFFSET_MULTIPLIER * HERTZ_TO_PPM_MULTIPLIER_CHAN_2
-//							/ 1.0e6);
 			double freqOffsetMultiplier = (config.dataRate == DWT_BR_110K) ? FREQ_OFFSET_MULTIPLIER_110KB : FREQ_OFFSET_MULTIPLIER;
 			clockOffsetRatio = dwt_readcarrierintegrator()
 								* (freqOffsetMultiplier * HERTZ_TO_PPM_MULTIPLIER_CHAN_2 / 1.0e6);
@@ -351,13 +422,18 @@ int dwRange(void) {
 			}else{
 				dwmInfo.distance = dwmInfo.tof * SPEED_OF_LIGHT*100;
 				dwmInfo.dw_ready = VALID_DATA;
+				result = EX_VALID;
 
 				dwt_readdiagnostics(&dwmInfo.diagnostics); // reading diagnostics for bit usage at need
+				dwmInfo.exchange_tick_ms = rx_tick;
+				dwLatchExchange();
 
 				dwmInfo.wrong_ID = false;
 			}
+			Link_OnExchange(result, first, ext_poll, ext_resp);
 		}else{
 			dwmInfo.wrong_ID = true;
+			Link_OnExchange(EX_NONE, first, ext_poll, false);
 		}
 	} else {
 		/* Clear RX error/timeout events in the DW1000 status register. */
@@ -370,14 +446,671 @@ int dwRange(void) {
 
 		/* Reset RX to properly reinitialize LDE operation. */
 		dwt_rxreset();
+		Link_OnExchange(EX_NONE, first, ext_poll, false);
 	}
 
-
-	/* Execute a delay between ranging exchanges. */
 	/* Increment frame sequence number after transmission of the poll message (modulo 256). */
 	frame_seq_nb++;
 
+	return result;
+}
+
+/* What the host is told about one exchange; 9F keeps the shortest of a round's exchanges. */
+typedef struct {
+	uint32_t distance;
+	double tof;
+	dwt_rxdiag_t diagnostics;
+	uint16_t lde_ppindx, rxpacc_nosat;
+	uint32_t exchange_tick_ms;
+	int8_t tag_lora_tx_dbm;
+	uint8_t tag_uwb_tx_level, tag_no_lora;
+	uint16_t cir_fp_index, cir_start;
+	uint8_t cir_n;
+	uint8_t cir_buf[sizeof(dwmInfo.cir_buf)];
+} DwExchange_t;
+
+static DwExchange_t best_ex;
+
+static void ex_save(DwExchange_t *e) {
+	e->distance = dwmInfo.distance;
+	e->tof = dwmInfo.tof;
+	e->diagnostics = dwmInfo.diagnostics;
+	e->lde_ppindx = dwmInfo.lde_ppindx;
+	e->rxpacc_nosat = dwmInfo.rxpacc_nosat;
+	e->exchange_tick_ms = dwmInfo.exchange_tick_ms;
+	e->tag_lora_tx_dbm = dwmInfo.tag_lora_tx_dbm;
+	e->tag_uwb_tx_level = dwmInfo.tag_uwb_tx_level;
+	e->tag_no_lora = dwmInfo.tag_no_lora;
+	e->cir_fp_index = dwmInfo.cir_fp_index;
+	e->cir_start = dwmInfo.cir_start;
+	e->cir_n = dwmInfo.cir_n;
+	memcpy(e->cir_buf, dwmInfo.cir_buf, sizeof(e->cir_buf));
+}
+
+static void ex_restore(const DwExchange_t *e) {
+	dwmInfo.distance = e->distance;
+	dwmInfo.tof = e->tof;
+	dwmInfo.diagnostics = e->diagnostics;
+	dwmInfo.lde_ppindx = e->lde_ppindx;
+	dwmInfo.rxpacc_nosat = e->rxpacc_nosat;
+	dwmInfo.exchange_tick_ms = e->exchange_tick_ms;
+	dwmInfo.tag_lora_tx_dbm = e->tag_lora_tx_dbm;
+	dwmInfo.tag_uwb_tx_level = e->tag_uwb_tx_level;
+	dwmInfo.tag_no_lora = e->tag_no_lora;
+	dwmInfo.cir_fp_index = e->cir_fp_index;
+	dwmInfo.cir_start = e->cir_start;
+	dwmInfo.cir_n = e->cir_n;
+	memcpy(dwmInfo.cir_buf, e->cir_buf, sizeof(e->cir_buf));
+}
+
+/* SEARCH_TWR round (9F). NLOS error is one-sided (a reflection only reads long), so with repeats
+ * on the anchor runs K exchanges back-to-back and reports the shortest valid one with its own
+ * diagnostics. K: k_req from the request, else the configured k_max, else 3 while RX-FP sits above
+ * the soft threshold (or the NLOS LDE preset is on) and 1 otherwise. A miss ends the round early. */
+int dwRangeRound(uint8_t k_req) {
+	uint8_t k = 1;
+	if (link_cfg.features & LINK_F_REPEATS) {
+		if (k_req)
+			k = k_req;
+		else if (link_cfg.k_max)
+			k = link_cfg.k_max;
+		else if (link_st.last_rx_dbm > LINK_STRONG_DBM)	// weak (far): the shortest of K would be noise
+			k = (link_st.lde_nlos || link_st.last_rxfp_db > LINK_RXFP_SOFT_DB) ? 3 : 1;
+		else
+			k = 1;
+		if (k > LINK_K_MAX)
+			k = LINK_K_MAX;
+		if (Link_Coexisting())
+			k = 1;		// 9K: repeats touch the air; the section 8 timings assume one exchange
+	}
+
+	bool got = false;
+	uint8_t used = 0;
+	while (used < k) {
+		uint8_t r = dwExchange(used == 0);
+		used++;
+		if (r != EX_VALID)
+			break;
+		if (!got || dwmInfo.distance < best_ex.distance) {
+			if (k > 1)
+				ex_save(&best_ex);
+			got = true;
+		}
+	}
+	if (got) {
+		if (k > 1)
+			ex_restore(&best_ex);
+		dwmInfo.dw_ready = VALID_DATA;
+	}
+	link_st.k_used = used;
 	return 0;
+}
+
+#define RXPACC_NOSAT_OFFSET 0x2C	// DRX_CONF sub-register, 2 bytes
+
+// Latch what the host needs to attribute to this exchange while the DW1000 still holds the
+// received frame: RX has not re-armed, so LDE and the accumulator belong to this response.
+void dwLatchExchange(void) {
+	dwmInfo.lde_ppindx = dwt_read16bitoffsetreg(LDE_IF_ID, LDE_PPINDX_OFFSET);
+	dwmInfo.rxpacc_nosat = dwt_read16bitoffsetreg(DRX_CONF_ID, RXPACC_NOSAT_OFFSET);
+
+	if (!(link_cfg.features & LINK_F_CIR)) {	// 9B off: no accumulator read, nothing latched
+		dwmInfo.cir_n = 0;
+		return;
+	}
+	// 32 complex samples from 8 before the detected first path (FP_INDEX is Q10.6)
+	uint16_t fp = dwmInfo.diagnostics.firstPath;
+	int start = (fp >> 6) - CIR_WINDOW_PRE;
+	if (start < 0)
+		start = 0;
+	if (start > (ACC_MEM_LEN / 4) - CIR_WINDOW_N)
+		start = (ACC_MEM_LEN / 4) - CIR_WINDOW_N;
+	dwt_readaccdata(dwmInfo.cir_buf, 1 + 4 * CIR_WINDOW_N, start * 4);	// clocks forced on inside
+	dwmInfo.cir_fp_index = fp;
+	dwmInfo.cir_start = start;
+	dwmInfo.cir_n = CIR_WINDOW_N;
+}
+
+/*************************
+ *
+ * 		LINK ADAPTATION (doc section 9, rule zero)
+ *
+ * The link is never lost. Every adaptive change fails toward maximum power on the legacy frames:
+ *  - extended frames only after the tag answered a hello; 2 unanswered extended polls, a legacy
+ *    answer, 1 s without a response or another tag put the anchor back on legacy polls, which the
+ *    tag always answers at maximum;
+ *  - UWB (9D): the tag sends each response at the level that poll asked for, so there is no shared
+ *    state to get out of step. Louder at once; quieter one 3 dB level at a time, after 2 good
+ *    responses and step_interval, never below 10 dB over sensitivity. One miss: back to the
+ *    previous level; two: maximum;
+ *  - LoRa (9D/9J, the owner anchor only): the tag's LoRa power is shared state, so a quieter step
+ *    is request (seq) -> ack -> confirm -> proof, each repeated up to LINK_TRIES polls; louder
+ *    takes effect at once. No packet for LINK_LORA_LOST_MS, a bad SNR or a failed confirm asks for
+ *    more power. The tag drops back by itself when the owner goes quiet (LINK_REVERT_MS / LINK_SILENCE_MS);
+ *  - switching a feature off asks for maximum until the tag shows it, then returns to legacy polls.
+ */
+LinkCfg_t link_cfg = { .features = 0, .k_max = 0, .lora_target_dbm = -70, .lora_band_db = 6,
+		.uwb_target_dbm = -80, .uwb_band_db = 5, .profile_max = 0, .profile_override = 0xFF,
+		.step_interval_ds = 20, .lora_owner = 0, .uwb_level_pin = 0xFF };
+LinkState_t link_st;
+
+static uint32_t link_step_ms(void) {
+	return (uint32_t)link_cfg.step_interval_ds * 100;
+}
+
+static void link_next_seq(void) {
+	if (++link_st.seq == 0)
+		link_st.seq = 1;	// 0 means "no confirm"
+}
+
+// Everything at maximum on legacy frames, as anc3.1.5.
+static void link_reset(void) {
+	link_st.ext = 0;
+	link_st.tag_ver = 0;
+	link_st.ext_miss = 0;
+	link_st.reverting = 0;
+	link_st.uwb_level = link_st.uwb_prev = 0;
+	link_st.uwb_good = link_st.uwb_miss = link_st.uwb_mismatch = 0;
+	link_st.uwb_floor = LINK_UWB_LEVELS - 1;
+	link_st.lora_phase = LINK_LP_IDLE;
+	link_st.lora_cur = link_st.lora_req = LINK_LORA_MAX_DBM;
+	link_st.lora_tries = link_st.lora_good = 0;
+	link_st.echo_lora_dbm = LINK_LORA_UNKNOWN;
+	link_st.echo_uwb_level = LINK_UWB_UNKNOWN;
+	link_st.echo_profile = 0xFF;
+	link_st.echo_pending = 0;
+	link_st.echo_lde_nlos = 0;
+}
+
+// Give up on extended frames for a while.
+static void link_fallback(void) {
+	link_reset();
+	link_st.ext_hold = 1;
+	link_st.ext_hold_tick = HAL_GetTick();
+}
+
+static void link_lora_up(int8_t dbm) {
+	if (dbm > LINK_LORA_MAX_DBM)
+		dbm = LINK_LORA_MAX_DBM;
+	link_next_seq();
+	link_st.lora_req = dbm;
+	link_st.lora_phase = LINK_LP_UP;
+	link_st.lora_tries = 0;
+	link_st.lora_good = 0;
+}
+
+static bool link_lora_active(void) {
+	return (link_cfg.features & LINK_F_POWER) && link_cfg.lora_owner && link_st.ext && !link_st.reverting;
+}
+
+/* 9K: with two stations on one tag (the tag says so) or this anchor's backoff armed, nothing
+ * adapts: legacy polls (the 12-byte frame the section 8 backoff and duty cycle were tuned on, tag at
+ * maximum), K = 1, no requests. Adaptation resumes LINK_MULTI_MS after the last sign of a second station. */
+static bool link_backoff_armed(void) {
+	return Backoff_Left() != 0;
+}
+
+bool Link_Coexisting(void) {
+	if (link_backoff_armed())
+		link_st.coexist_tick = HAL_GetTick();
+	return HAL_GetTick() - link_st.coexist_tick < LINK_MULTI_MS;
+}
+
+void Link_Init(void) {
+	link_reset();
+	link_st.ext_hold = 0;
+	link_st.ext_tag = 0xFFFF;
+	link_st.seq = (uint8_t)(random() | 1);	// not the seq a tag may still hold from before a reset
+	link_st.lde_nlos = 0;
+	link_st.lde_count = 0;
+	link_st.last_rxfp_db = 0;
+	link_st.last_rx_dbm = -200.0f;	// unknown: no repeats until a strong exchange
+	link_st.k_used = 1;
+	link_st.coexist_tick = HAL_GetTick() - LINK_MULTI_MS;
+}
+
+// Extended frames carry the tag's TX power (9D) and LDE preset (9G).
+static bool link_wants_ext(void) {
+	return (link_cfg.features & (LINK_F_POWER | LINK_F_LDE_AUTO)) != 0;
+}
+
+bool Link_WantHello(void) {
+	if (link_st.ext_hold && HAL_GetTick() - link_st.ext_hold_tick >= LINK_EXT_HOLD_MS)
+		link_st.ext_hold = 0;
+	return link_wants_ext() && !link_st.ext_hold;
+}
+
+void Link_BeforePoll(void) {
+	uint32_t now = HAL_GetTick();
+	if (dwmInfo.tag_dest != link_st.ext_tag) {	// state belongs to one tag
+		link_reset();
+		link_st.ext_hold = 0;
+		link_st.ext_tag = dwmInfo.tag_dest;
+	}
+	if (!link_st.ext)
+		return;
+	if (Link_Coexisting() && !link_st.reverting) {	// 9K: back to the ground state, legacy polls
+		link_reset();
+		return;
+	}
+	if (now - link_st.last_uwb_tick > LINK_UWB_LOST_MS) {	// quiet (host paused, tag away): ground state,
+		link_reset();										// hello again at once
+		return;
+	}
+	if (link_lora_active() && now - link_st.last_lora_tick > LINK_LORA_LOST_MS
+			&& link_st.lora_cur < LINK_LORA_MAX_DBM && link_st.lora_phase != LINK_LP_UP)
+		link_lora_up(LINK_LORA_MAX_DBM);	// packets stopped: find them at full power
+}
+
+void Link_FillExtPoll(twr_anchor_ext_msg_t *p) {
+	// 9G for the tag too: the channel is reciprocal, so the preset this anchor chose from the
+	// response also suits the tag's reception of the poll
+	p->ctrl = ((link_cfg.features & LINK_F_LDE_AUTO) && link_st.lde_nlos && !link_st.reverting) ? LINK_CTRL_LDE_NLOS : 0;
+	p->confirm_seq = 0;
+	if (link_st.reverting) {
+		if (++link_st.revert_tries > LINK_TRIES) {	// legacy polls put a new tag at maximum anyway
+			link_reset();
+			p->req_uwb_level = 0;
+		}
+		p->seq = link_st.seq;
+		p->req_lora_dbm = LINK_LORA_MAX_DBM;
+		p->req_uwb_level = 0;
+		return;
+	}
+	if ((link_cfg.features & LINK_F_POWER) && link_cfg.uwb_level_pin < LINK_UWB_LEVELS)
+		link_st.uwb_level = link_cfg.uwb_level_pin;	// bench pin; the loop below does not move it
+	p->req_uwb_level = link_st.uwb_level;
+
+	if (!link_lora_active()) {
+		p->seq = link_st.seq;
+		p->req_lora_dbm = LINK_LORA_KEEP;
+		return;
+	}
+	switch (link_st.lora_phase) {
+	case LINK_LP_REQ:
+		if (++link_st.lora_tries > LINK_TRIES) {	// never acknowledged: the tag did not switch
+			link_st.lora_phase = LINK_LP_IDLE;
+			link_st.lora_req = link_st.lora_cur;
+		}
+		break;
+	case LINK_LP_CONF:
+		if (++link_st.lora_tries > LINK_TRIES) {	// no proof: back to the last confirmed power
+			link_lora_up(link_st.lora_cur);
+		}
+		break;
+	case LINK_LP_UP:
+		if (++link_st.lora_tries > LINK_TRIES) {	// keep asking, from a fresh seq
+			link_lora_up(link_st.lora_req);
+		}
+		break;
+	default:
+		link_st.lora_req = link_st.lora_cur;	// keep-alive: same seq, current power
+		break;
+	}
+	p->seq = link_st.seq;
+	p->req_lora_dbm = link_st.lora_req;
+	if (link_st.lora_phase == LINK_LP_CONF)
+		p->confirm_seq = link_st.seq;
+}
+
+// A frame from the tag being ranged (legacy or extended); valid range or not.
+void Link_OnResponse(const twr_tag_ext_msg_t *r, bool ext_poll, bool ext_resp, bool hello) {
+	uint32_t now = HAL_GetTick();
+	if (!ext_resp) {	// legacy response: no-LoRa flag only, power not reported
+		dwmInfo.tag_no_lora = r->tag_no_lora & 1;
+		dwmInfo.tag_lora_tx_dbm = LINK_LORA_UNKNOWN;
+		dwmInfo.tag_uwb_tx_level = LINK_UWB_UNKNOWN;
+		if (ext_poll) {				// an older tag, or an anchor in imposter mode
+			link_fallback();
+		} else if (hello && (r->tag_no_lora & LINK_CAPABLE)) {	// a new tag
+			if (r->tag_no_lora & LINK_CAPABLE_MULTI)
+				link_st.coexist_tick = now;
+			if (Link_Coexisting())
+				return;		// 9K: stay on legacy polls while two stations share the tag
+			link_reset();	// extended frames from now on
+			link_st.tag_ver = LINK_VER_OF(r->tag_no_lora) ? LINK_VER_OF(r->tag_no_lora) : 1;
+			link_st.ext = 1;
+			link_st.last_uwb_tick = link_st.last_lora_tick = now;
+			link_st.uwb_step_tick = link_st.lora_step_tick = now;
+			link_next_seq();
+		}
+		return;
+	}
+
+	bool no_lora = r->tag_no_lora & LINK_RESP_NO_LORA;
+	dwmInfo.tag_no_lora = no_lora;
+	dwmInfo.tag_lora_tx_dbm = no_lora ? LINK_LORA_UNKNOWN : r->lora_dbm;
+	dwmInfo.tag_uwb_tx_level = r->uwb_level;
+	link_st.ack_seq = r->ack_seq;
+	link_st.echo_lora_dbm = dwmInfo.tag_lora_tx_dbm;
+	link_st.echo_uwb_level = r->uwb_level;
+	link_st.echo_profile = r->profile_used;
+	link_st.echo_pending = (r->tag_no_lora & LINK_RESP_PENDING) != 0;
+	link_st.echo_lde_nlos = (r->tag_no_lora & LINK_RESP_LDE_NLOS) != 0;
+	link_st.last_uwb_tick = now;
+	link_st.ext_miss = 0;
+	if (r->tag_no_lora & LINK_RESP_MULTI) {	// 9K: a second station appeared; the tag is at maximum already
+		link_st.coexist_tick = now;
+		if (!link_st.reverting) {
+			link_reset();
+			return;
+		}
+	}
+
+	// UWB: the tag answers at the level this poll asked for. Louder than asked is its floor (boards
+	// with a lower maximum have fewer levels); quieter than asked is not obeying.
+	if (r->uwb_level < link_st.uwb_level) {
+		link_st.uwb_floor = r->uwb_level;
+		link_st.uwb_level = r->uwb_level;
+		if (link_st.uwb_prev > link_st.uwb_level)
+			link_st.uwb_prev = link_st.uwb_level;
+		link_st.uwb_mismatch = 0;
+	} else if (r->uwb_level > link_st.uwb_level) {
+		if (++link_st.uwb_mismatch >= 2) {
+			link_st.uwb_level = link_st.uwb_prev = 0;
+			link_st.uwb_mismatch = 0;
+		}
+	} else {
+		link_st.uwb_mismatch = 0;
+	}
+
+	if (link_st.reverting) {
+		if ((no_lora || r->lora_dbm == LINK_LORA_MAX_DBM) && r->uwb_level == 0 && !link_st.echo_lde_nlos)
+			link_reset();	// the tag is back on its defaults: legacy polls
+		return;
+	}
+	if (!link_lora_active() || no_lora)
+		return;
+
+	int8_t tag = r->lora_dbm;
+	switch (link_st.lora_phase) {
+	case LINK_LP_IDLE:
+		if (tag != link_st.lora_cur)	// the tag fell back on its own, or another station moved it
+			link_st.lora_cur = link_st.lora_req = tag;
+		break;
+	case LINK_LP_REQ:
+		if (r->ack_seq == link_st.seq && link_st.echo_pending) {
+			link_st.lora_phase = LINK_LP_CONF;
+			link_st.lora_tries = 0;
+		}
+		break;
+	case LINK_LP_CONF:
+		if (tag == link_st.lora_req && !link_st.echo_pending) {	// proof: the tag runs the new power
+			link_st.lora_cur = tag;
+			link_st.lora_phase = LINK_LP_IDLE;
+			link_st.lora_step_tick = now;
+			link_st.lora_good = 0;
+		}
+		break;
+	case LINK_LP_UP:
+		if (tag >= link_st.lora_req) {
+			link_st.lora_cur = link_st.lora_req = tag;
+			link_st.lora_phase = LINK_LP_IDLE;
+			link_st.lora_step_tick = now;	// no quieter step right after a louder one
+			link_st.lora_good = 0;
+		}
+		break;
+	}
+}
+
+/* ---------------- configuration items (opcode 24, main.h LCMD_* / LITEM_*) ----------------
+ * One item for one tag at a time. LoRa first: after a beacon on a slot the tag listens to, the
+ * command goes out with inverted IQ and the tag acks right away. Once LoRa has not answered for
+ * LITEM_UWB_AFTER_MS the item also rides the extended UWB poll v2 (tag3.2.1+), whose answer comes
+ * after the tag has applied it ("applying" first, the read-back on a later poll). */
+LinkItem_t link_item = { .state = LITEM_IDLE };
+
+bool Link_ItemQueue(uint16_t tag, uint8_t item, uint16_t value) {
+	if (item == LITEM_NONE)
+		return false;
+	link_item.tag = tag & 0x7FFF;
+	link_item.item = item;
+	link_item.value = value;
+	if (++link_item.seq == 0)
+		link_item.seq = 1;
+	link_item.readback = 0;
+	link_item.flags = 0;
+	link_item.via = 0;
+	link_item.lora_tries = 0;
+	link_item.start_tick = HAL_GetTick();
+	link_item.state = LITEM_PENDING;
+	return true;
+}
+
+static bool link_item_active(uint16_t tag) {
+	if (link_item.state != LITEM_PENDING || link_item.tag != tag)
+		return false;
+	if (HAL_GetTick() - link_item.start_tick > LITEM_GIVE_UP_MS) {
+		link_item.state = LITEM_FAILED;
+		return false;
+	}
+	return true;
+}
+
+// Slots the tag listens to: multiples of its period. Unknown or stale -> the ground period, whose
+// slots every period lands on, so no command is sent into a window that is not open.
+bool Link_ItemLoraDue(uint8_t beacon_index) {
+	if (!link_item_active(lora_rxInfo.tag_id))
+		return false;
+	uint8_t n = link_item.tag_listen_n;
+	if (n == 0 || HAL_GetTick() - link_item.listen_tick > 10000)
+		n = LCMD_LISTEN_GROUND;
+	return (beacon_index % n) == 0;
+}
+
+void Link_ItemFillCmd(sLoRaCmd *c) {
+	c->magic = LCMD_MAGIC;
+	c->tag_id = link_item.tag;
+	c->src = tx_poll_msg.src;
+	c->seq = link_item.seq;
+	c->item = link_item.item;
+	c->value = link_item.value;
+	c->spare = 0;
+	c->checksum = checksum((uint8_t*)c, sizeof(*c));
+	link_item.lora_tries++;
+}
+
+static void link_item_done(uint16_t readback, uint8_t flags, uint8_t via) {
+	link_item.readback = readback;
+	link_item.flags = flags;
+	link_item.via = via;
+	link_item.state = LITEM_DONE;
+}
+
+void Link_ItemOnLoraAck(const sLoRaAck *a) {
+	if (a->tag_id == link_item.tag) {
+		link_item.tag_listen_n = a->listen_n;
+		link_item.listen_tick = HAL_GetTick();
+	}
+	if (link_item.state == LITEM_PENDING && a->tag_id == link_item.tag && a->seq == link_item.seq
+			&& a->item == link_item.item)
+		link_item_done(a->value, a->flags, LITEM_VIA_LORA);
+}
+
+bool Link_ItemUwbDue(void) {
+	return link_st.tag_ver >= 2 && link_item_active(dwmInfo.tag_dest)
+			&& HAL_GetTick() - link_item.start_tick > LITEM_UWB_AFTER_MS;
+}
+
+void Link_ItemFillPoll(twr_anchor_ext2_msg_t *p) {
+	p->item_seq = link_item.seq;
+	p->item = link_item.item;
+	p->item_value = link_item.value;
+}
+
+void Link_ItemOnUwb(const twr_tag_ext2_msg_t *r) {
+	if (link_item.state == LITEM_PENDING && r->item == link_item.item && r->item_seq == link_item.seq
+			&& !(r->item_flags & LACK_F_APPLYING))
+		link_item_done(r->item_value, r->item_flags, LITEM_VIA_UWB);
+}
+
+// rx_power_dbm and first-path power, DW1000 UM 4.7.1/4.7.2 (PRF 64 MHz); N without the SFD
+// correction (< 0.4 dB at 2048 preamble symbols)
+static float link_rx_power_dbm(void) {
+	float n = dwmInfo.diagnostics.rxPreamCount;
+	if (n == 0 || dwmInfo.diagnostics.cirPwr == 0)
+		return 0;
+	return 10.0f * log10f(((float)dwmInfo.diagnostics.cirPwr * 131072.0f) / (n * n)) - PRF_64Mhz;
+}
+
+static float link_fp_power_dbm(void) {
+	float n = dwmInfo.diagnostics.rxPreamCount;
+	float f1 = dwmInfo.diagnostics.firstPathAmp1, f2 = dwmInfo.diagnostics.firstPathAmp2,
+			f3 = dwmInfo.diagnostics.firstPathAmp3;
+	float e = f1 * f1 + f2 * f2 + f3 * f3;
+	if (n == 0 || e == 0)
+		return 0;
+	return 10.0f * log10f(e / (n * n)) - PRF_64Mhz;
+}
+
+// 9G: LOS / NLOS LDE preset from RX-FP, dead band 2 dB, LINK_LDE_HOLD exchanges to flip. A weak
+// signal counts as LOS: there RX-FP measures noise, and the more sensitive NLOS threshold would
+// trigger on it.
+static void link_lde_update(float rxfp, float rx) {
+	if (!(link_cfg.features & LINK_F_LDE_AUTO))
+		return;
+	bool nlos = (rx > LINK_STRONG_DBM) && (rxfp > LINK_RXFP_SOFT_DB + 1.0f);
+	bool los = (rx <= LINK_STRONG_DBM) || (rxfp < LINK_RXFP_SOFT_DB - 1.0f);
+	bool flip = link_st.lde_nlos ? los : nlos;
+	if (!flip) {
+		link_st.lde_count = 0;
+		return;
+	}
+	if (++link_st.lde_count < LINK_LDE_HOLD)
+		return;
+	link_st.lde_count = 0;
+	link_st.lde_nlos = !link_st.lde_nlos;
+	dwt_write8bitoffsetreg(LDE_IF_ID, LDE_CFG1_OFFSET, dwLdeCfg1());
+	dwt_rxreset();	// LDE change takes effect from a fresh RX
+}
+
+uint8_t dwLdeCfg1(void) {
+	return link_st.lde_nlos ? LINK_LDE_NLOS : lde_cfg1;
+}
+
+// After each exchange: UWB loop, 9G and miss handling.
+void Link_OnExchange(uint8_t result, bool first, bool ext_poll, bool ext_resp) {
+	uint32_t now = HAL_GetTick();
+	if (result == EX_VALID) {
+		float rx = link_rx_power_dbm();
+		float fp = link_fp_power_dbm();
+		link_st.last_rxfp_db = rx - fp;
+		link_st.last_rx_dbm = rx;
+		link_lde_update(link_st.last_rxfp_db, rx);
+	}
+	if (!ext_poll)
+		return;
+
+	if (result == EX_NONE) {
+		if (!first)		// a repeat that goes unanswered (tag still re-arming) proves nothing
+			return;
+		// extended polls go unanswered: legacy frames (a bench level pin rides out a weak level)
+		if (++link_st.ext_miss >= ((link_cfg.uwb_level_pin < LINK_UWB_LEVELS) ? 20 : 2)) {
+			link_fallback();
+			return;
+		}
+		{
+			link_st.uwb_good = 0;
+			if (++link_st.uwb_miss >= 2)
+				link_st.uwb_level = link_st.uwb_prev = 0;
+			else if (link_st.uwb_prev < link_st.uwb_level)
+				link_st.uwb_level = link_st.uwb_prev;	// undo the last quieter step
+		}
+		return;
+	}
+	link_st.uwb_miss = 0;
+	if (result != EX_VALID || !ext_resp || link_st.reverting || !(link_cfg.features & LINK_F_POWER))
+		return;
+	if (link_st.echo_uwb_level != link_st.uwb_level)
+		return;
+
+	if (link_cfg.uwb_level_pin < LINK_UWB_LEVELS)
+		return;		// pinned for a bench sweep
+	float rx = link_rx_power_dbm();
+	int target = link_cfg.uwb_target_dbm, band = link_cfg.uwb_band_db;
+	if (rx < target - band) {	// louder at once
+		if (link_st.uwb_level > 0) {
+			link_st.uwb_prev = link_st.uwb_level;
+			link_st.uwb_level--;
+		}
+		link_st.uwb_good = 0;
+	} else if (rx > target + band && link_st.uwb_good >= 2 && now - link_st.uwb_step_tick >= link_step_ms()
+			&& link_st.uwb_level < link_st.uwb_floor && rx - 3.0f >= LINK_UWB_SENS_DBM + 10) {
+		link_st.uwb_prev = link_st.uwb_level;
+		link_st.uwb_level++;
+		link_st.uwb_step_tick = now;
+		link_st.uwb_good = 0;
+	} else if (link_st.uwb_good < 255) {
+		link_st.uwb_good++;
+	}
+}
+
+// Each valid LoRa packet from the tag being ranged (owner anchor runs the LoRa loop).
+void Link_OnLoraPacket(int8_t signal_rssi_dbm, int8_t snr_db) {
+	uint32_t now = HAL_GetTick();
+	link_st.last_lora_tick = now;
+	if (!link_lora_active() || link_st.echo_lora_dbm == LINK_LORA_UNKNOWN)
+		return;
+	if (link_st.lora_phase == LINK_LP_IDLE && link_st.lora_good < 255)
+		link_st.lora_good++;
+
+	int target = link_cfg.lora_target_dbm, band = link_cfg.lora_band_db;
+	if (snr_db < LINK_LORA_MIN_SNR || signal_rssi_dbm < target - 3 * band) {	// in trouble: maximum at once
+		if (link_st.lora_cur < LINK_LORA_MAX_DBM || link_st.lora_phase != LINK_LP_IDLE)
+			if (link_st.lora_phase != LINK_LP_UP || link_st.lora_req < LINK_LORA_MAX_DBM)
+				link_lora_up(LINK_LORA_MAX_DBM);
+	} else if (signal_rssi_dbm < target - band) {	// louder at once
+		if (link_st.lora_phase != LINK_LP_UP
+				&& (link_st.lora_cur < LINK_LORA_MAX_DBM || link_st.lora_phase != LINK_LP_IDLE))
+			link_lora_up(link_st.lora_cur + LINK_LORA_STEP_DB);	// also cancels a pending quieter step
+	} else if (signal_rssi_dbm > target + band && link_st.lora_phase == LINK_LP_IDLE
+			&& link_st.lora_good >= 2 && now - link_st.lora_step_tick >= link_step_ms()
+			&& link_st.lora_cur - LINK_LORA_STEP_DB >= LINK_LORA_MIN_DBM) {
+		link_next_seq();
+		link_st.lora_req = link_st.lora_cur - LINK_LORA_STEP_DB;
+		link_st.lora_phase = LINK_LP_REQ;
+		link_st.lora_tries = 0;
+	}
+}
+
+// Opcode 22: bytes in LinkCfg_t order; a shorter payload changes only the leading fields.
+void Link_SetConfig(const uint8_t *cfg, uint8_t len) {
+	LinkCfg_t c = link_cfg;
+	if (len > sizeof(c))
+		len = sizeof(c);
+	memcpy(&c, cfg, len);
+	if (c.k_max > LINK_K_MAX)
+		c.k_max = LINK_K_MAX;
+	if (c.lora_band_db == 0)
+		c.lora_band_db = 1;
+	if (c.uwb_band_db == 0)
+		c.uwb_band_db = 1;
+
+	uint8_t was = link_cfg.features;
+	link_cfg = c;
+	if (link_st.ext && !link_wants_ext()) {
+		// off means revert: ask for maximum and LOS until the tag shows it, then legacy polls
+		link_st.reverting = 1;
+		link_st.revert_tries = 0;
+		link_st.uwb_level = link_st.uwb_prev = 0;
+		link_next_seq();
+	} else if ((was & LINK_F_POWER) && !(c.features & LINK_F_POWER)) {
+		// 9G stays on, frames stay extended: UWB back to maximum now; LoRa requests stop, so the
+		// tag returns to maximum by itself within LINK_SILENCE_MS
+		link_st.uwb_level = link_st.uwb_prev = 0;
+		link_st.lora_phase = LINK_LP_IDLE;
+		link_st.lora_cur = link_st.lora_req = LINK_LORA_MAX_DBM;
+	}
+	if (!c.lora_owner && link_st.lora_phase != LINK_LP_IDLE) {
+		link_st.lora_phase = LINK_LP_IDLE;	// the tag falls back by itself without owner polls
+		link_st.lora_req = link_st.lora_cur;
+	}
+	if ((was & LINK_F_LDE_AUTO) && !(c.features & LINK_F_LDE_AUTO) && link_st.lde_nlos) {
+		link_st.lde_nlos = 0;
+		dwt_write8bitoffsetreg(LDE_IF_ID, LDE_CFG1_OFFSET, lde_cfg1);
+		dwt_rxreset();
+	}
+	link_st.lde_count = 0;
 }
 
 
@@ -439,7 +1172,7 @@ int dwRange(void) {
 
 			/* Response TX timestamp is the transmission time we programmed plus the antenna delay. */
 			resp_tx_ts = (((uint64) (resp_tx_time & 0xFFFFFFFEUL)) << 8)
-					+ TX_ANT_DLY;
+					+ tx_ant_dly;	// the delay applied by dwApplyAntennaDelays()
 
            	tx_resp_msg.msd_index = rx_buffer.msd_index;//return the same message index
 

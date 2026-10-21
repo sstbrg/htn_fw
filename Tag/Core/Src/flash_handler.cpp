@@ -24,6 +24,7 @@ HAL_StatusTypeDef Flash_Write(uint32_t address, uint64_t *data, uint32_t num_of_
 	// Lock Flash
 	HAL_FLASH_Lock();
 
+	Update_Cash_Mem();	// reads of the page go through ICACHE: show the new data now, not after a reset
 	return status;
 }
 
@@ -52,6 +53,21 @@ HAL_StatusTypeDef Flash_Erase(uint32_t bank, uint32_t page){
 	HAL_FLASH_Lock();
 
 	return status;
+}
+
+// Self-id page slot write (0 id, 1/2 antenna delays, 3 crystal trim): page copied, one slot replaced.
+// Returns 0 on success; writes nothing when the slot already holds the value.
+uint8_t Flash_SelfIdSet(uint8_t slot, uint16_t value) {
+	uint16_t page[8];
+	memcpy(page, (const void*)FLASH_SELF_ID_ADDRESS, sizeof(page));
+	if (slot >= 8)
+		return 1;
+	if (page[slot] == value)
+		return 0;
+	page[slot] = value;
+	if (Flash_Erase(FLASH_SELF_ID_USER_BANK, FLASH_SELF_ID_PAGE) != HAL_OK)
+		return 1;
+	return Flash_Write(FLASH_SELF_ID_ADDRESS, (uint64_t*)page, 1) != HAL_OK;
 }
 
 void Update_Cash_Mem(){

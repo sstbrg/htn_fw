@@ -167,6 +167,40 @@ static void Antenna_Delay_Command(S_UART_MESSAGE *msg, S_UART_MESSAGE *reply) {
 	UART_SendMessage(r, sizeof(r));
 }
 
+// UART_OPCODE_XTAL_TRIM: {trim u8} 0..31 saves and applies it, 0xFF clears it (back to the chip's OTP
+// trim, or mid-range), empty = read. Self-id page slot 3. Reply {status, saved (0xFF = none), active}.
+static void Xtal_Trim_Command(S_UART_MESSAGE *msg) {
+	static uint8_t r[6];
+	uint8_t status = 0;
+	if (msg->header.length >= sizeof(S_HEADER) + 1 + 1) {
+		uint8_t t = msg->buff[0];
+		if (t <= FS_XTALT_MASK || t == 0xFF) {
+			uint16_t page[8];
+			memcpy(page, (const void*)FLASH_SELF_ID_ADDRESS, sizeof(page));
+			page[3] = (t == 0xFF) ? 0xFFFF : t;
+			if (Flash_Erase(FLASH_SELF_ID_USER_BANK, FLASH_SELF_ID_PAGE) != HAL_OK
+					|| Flash_Write(FLASH_SELF_ID_ADDRESS, (uint64_t*)page, 1) != HAL_OK)
+				status = 1;
+			if (t == 0xFF) {	// back to what the driver loads at init
+				dwmInit();
+				dwConfig(&config);
+			} else {
+				dwt_setxtaltrim(t);
+			}
+		} else {
+			status = 2;		// out of range
+		}
+	}
+	uint16_t saved = ((const uint16_t*)FLASH_SELF_ID_ADDRESS)[3];
+	r[0] = msg->header.opcode;
+	r[1] = sizeof(r);
+	r[2] = status;
+	r[3] = (saved <= FS_XTALT_MASK) ? (uint8_t)saved : 0xFF;
+	r[4] = dwt_read8bitoffsetreg(FS_CTRL_ID, FS_XTALT_OFFSET) & FS_XTALT_MASK;
+	r[5] = checksum(r, sizeof(r));
+	UART_SendMessage(r, sizeof(r));
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -288,6 +322,8 @@ int main(void)
 
 		//	UWB
 
+		if (!fota_busy())
+			dwRecover();
 		if (dwmInfo.no_uwb == false && !fota_busy())
 		{
 			if (dwRange())
@@ -299,9 +335,9 @@ int main(void)
 		if (lora_rxInfo.no_lora == false && !fota_busy()){
 			if (lora_rxInfo.wakeup_detected == true){
 
-				if (Lora_TXidle() && !PWR_NeedToSleep())
+				if (!PWR_NeedToSleep())
 				{
-					RunTXStateMachine(errors);
+					Lora_TagService(errors);	// beacons, plus the command listen window and its ack
 				}
 			}
 			else
@@ -326,7 +362,7 @@ int main(void)
 			{
 //				uint16_t new_id = msg.set_id_req.new_id;
 				const uint16_t *page = (const uint16_t*)FLASH_SELF_ID_ADDRESS;	// keep the antenna delays
-				uint16_t new_id[8] = {msg.set_id_req.new_id,page[1],page[2],0xFFFF,0xFFFF,0xFFFF,0xFFFF,0xFFFF};
+				uint16_t new_id[8] = {msg.set_id_req.new_id,page[1],page[2],page[3],0xFFFF,0xFFFF,0xFFFF,0xFFFF};	// keep delays and crystal trim
 
 				//uint64_t Data = msg.set_id_req.new_id;
 				uint8_t error;
@@ -353,6 +389,11 @@ int main(void)
 			case UART_OPCODE_ANT_DELAY:
 			{
 				Antenna_Delay_Command(&msg, &reply);
+				break;
+			}
+			case UART_OPCODE_XTAL_TRIM:
+			{
+				Xtal_Trim_Command(&msg);
 				break;
 			}
 			case UART_OPCODE_LOOPBACK:
@@ -477,7 +518,7 @@ void SystemClock_Config(void)
 static void MX_NVIC_Init(void)
 {
   /* EXTI4_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(EXTI4_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(EXTI4_IRQn, 1, 0);	// below TIM4: the watchdog preempts a radio handler stuck on BUSY
   HAL_NVIC_EnableIRQ(EXTI4_IRQn);
   /* TIM4_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(TIM4_IRQn, 0, 0);
@@ -585,9 +626,7 @@ void Error_Handler(void)
   /* USER CODE BEGIN Error_Handler_Debug */
 	/* User can add his own implementation to report the HAL error return state */
 	__disable_irq();
-	while (1)
-	{
-	}
+	HAL_NVIC_SystemReset();	// a hang with interrupts off would bypass the TIM4 watchdog
   /* USER CODE END Error_Handler_Debug */
 }
 

@@ -146,6 +146,8 @@ void Update_Lora_Config(LoraRxInfo_t* pLoraRxInfo, uint16_t tag_dest);
 
 uint16_t scramble(uint16_t self_id);
 void  Lora_Debug();
+bool Lora_CmdService(void);		// main loop: a configuration command exchange owns the radio
+void Lora_SendCommand(void);
 
 
 #ifdef __cplusplus

@@ -40,6 +40,13 @@ extern "C"
 #define VALID_DATA 0x00
 #define LORA_TIMEOUT_DURATION 600
 
+#define LINK_STATE_EXT		0x01	// extended UWB frames in use with this tag
+#define LINK_STATE_OWNER	0x02	// this anchor runs the LoRa loop
+#define LINK_STATE_PENDING	0x04	// a LoRa step is in its handshake
+#define LINK_STATE_REVERT	0x08	// switched off: asking for maximum
+#define LINK_STATE_COEXIST	0x10	// two stations or backoff armed: adaptation frozen (9K)
+#define LINK_STATE_TAG_NLOS	0x20	// the tag reports its NLOS LDE preset (9G)
+
 #pragma pack (1)
 typedef struct
 {
@@ -111,6 +118,13 @@ typedef struct
 	uint8_t tag_soc_battery;
 	status_bits tag_errors;
 	status_bits errors;
+	// LINK_F_REPLY_EXT only (doc 9C/9F/9H); without it the reply ends here, as anc3.1.5
+	uint32_t exchange_tick_ms;	// HAL_GetTick() at the reported response frame, 0 = no exchange this round
+	int8_t tag_lora_tx_dbm;		// from the tag's response, LINK_LORA_UNKNOWN = unknown
+	uint8_t tag_uwb_tx_level;	// from the tag's response, LINK_UWB_UNKNOWN = unknown
+	int8_t lora_signal_rssi;	// SignalRssiPkt (dBm), same packet as lora_rssi
+	uint8_t k_used;				// exchanges run this round (9F)
+	uint8_t profile_used;		// 9H: 0, or 0xFF when the tag does not report it
 	uint8_t checksum;
 } S_UART_OP_TWR_REPLY;
 
@@ -148,6 +162,18 @@ typedef struct
 	uint8_t  		is_tag;	//	0 = anchor
 	Fault_Counter 	fault_counter;
 
+	//	link_state (doc 9I), LINK_F_REPLY_EXT only; without it the reply ends here, as anc3.1.5
+	uint8_t			link_features;		//	active feature mask (opcode 22)
+	uint8_t			link_flags;			//	LINK_STATE_*
+	uint8_t			profile_req;		//	9H: always 0
+	uint8_t			profile_echo;		//	0xFF = not reported
+	int8_t			req_lora_tx_dbm;	//	requested LoRa power, LINK_LORA_UNKNOWN = none
+	uint8_t			req_uwb_tx_level;	//	UWB level of the last poll
+	int8_t			tag_lora_tx_dbm;	//	last echo from the tag, LINK_LORA_UNKNOWN = unknown
+	uint8_t			tag_uwb_tx_level;	//	LINK_UWB_UNKNOWN = unknown
+	uint8_t			lde_preset;			//	0 = LOS (lde_cfg1), 1 = NLOS preset (9G)
+	uint8_t			k_used;				//	last round's exchanges (9F)
+
 	uint8_t 		checksum;
 } S_UART_STATUS_REPLY;
 
@@ -182,6 +208,11 @@ typedef struct
 	 uint16 TXF ;                    //number of transmitted frames
 	 uint16 HPW ;                    //half period warn
 	 uint16 TXW ;                    //power up warn
+
+	// LINK_F_REPLY_EXT only: latched with the diagnostics on the same valid exchange
+	uint16_t lde_ppindx;			// LDE_PPINDX, peak path index
+	uint16_t rxpacc_nosat;			// RXPACC_NOSAT
+	uint32_t exchange_tick_ms;		// HAL_GetTick() at the response frame
 
 	uint8_t checksum;
 } S_UART_STATUS_UWB_DIAG_REPLY;
@@ -402,6 +433,10 @@ typedef enum
 	/*17*/UART_OPCODE_READ_RESET_COUNTER,
 	/*19*/UART_OPCODE_BACKOFF_CTRL = 19,	// control of dwScanMode. enable or disable; optional {top_ms, min_ms}
 	/*20*/UART_OPCODE_ANT_DELAY = 20,		// per-device antenna delays {tx, rx} in flash; empty = read
+	/*21*/UART_OPCODE_READ_CIR_WINDOW = 21,	// CIR window latched with the last valid range
+	/*24*/UART_OPCODE_TAG_CONFIG = 24,		// configuration item to the tag over LoRa, UWB as backup; empty = status
+	/*23*/UART_OPCODE_XTAL_TRIM = 23,		// DW1000 crystal trim {trim 0..31, 0xFF = clear} in flash; empty = read
+	/*22*/UART_OPCODE_SET_LINK_FEATURES = 22,	// LinkCfg_t (doc 9I), a shorter payload sets the leading fields; empty = read
 
 	/*EE*/UART_OPCODE_ERROR = 0xEE,
 

@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>How the Polar Kalman, the Smoother and the Still Model Work</title>
+<style>
+  @page {
+    size: A4;
+    margin: 18mm 16mm 20mm 16mm;
+    @bottom-center { content: counter(page) " / " counter(pages); }
+  }
+  :root {
+    --ink:#1a1d23; --muted:#5b6470; --line:#dfe3e8; --soft:#f4f6f8;
+    --accent:#1d4ed8; --warn:#b9770e; --warn-bg:#fdf3e3; --good:#1f6f43; --good-bg:#e9f6ee;
+    --code-bg:#1e2330; --code-ink:#e6e9ef;
+  }
+  * { box-sizing:border-box; }
+  html { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  body {
+    font-family:"Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    color:var(--ink); font-size:10.6px; line-height:1.55; margin:0;
+    max-width:178mm;
+  }
+  .cover { border-bottom:3px solid var(--accent); padding-bottom:14px; margin-bottom:18px; }
+  .eyebrow { font-size:9px; letter-spacing:2.5px; text-transform:uppercase; color:var(--accent); font-weight:700; }
+  h1 { font-size:23px; margin:6px 0 4px; letter-spacing:-0.3px; }
+  .subtitle { color:var(--muted); font-size:11px; margin:0; }
+  .meta { margin-top:10px; font-size:9px; color:var(--muted); display:flex; gap:22px; flex-wrap:wrap; }
+  .meta b { color:var(--ink); font-weight:600; }
+  h2 { font-size:14px; margin:24px 0 8px; padding-bottom:4px; border-bottom:1.5px solid var(--line); letter-spacing:-0.2px; page-break-after:avoid; }
+  h3 { font-size:11.5px; margin:16px 0 6px; page-break-after:avoid; }
+  p { margin:0 0 8px; }
+  ul, ol { margin:0 0 8px 18px; padding:0; }
+  li { margin-bottom:4px; }
+  .note { background:var(--soft); border-left:3px solid var(--accent); padding:8px 10px; margin:10px 0; }
+  .warn { background:var(--warn-bg); border-left:3px solid var(--warn); padding:8px 10px; margin:10px 0; }
+  .good { background:var(--good-bg); border-left:3px solid var(--good); padding:8px 10px; margin:10px 0; }
+  code { font-family:Consolas, "DejaVu Sans Mono", monospace; font-size:9.6px; background:var(--soft); padding:1px 4px; border-radius:3px; }
+  table { border-collapse:collapse; width:100%; margin:8px 0 12px; font-size:9.8px; page-break-inside:avoid; }
+  th, td { border:1px solid var(--line); padding:5px 7px; vertical-align:top; text-align:left; }
+  th { background:var(--soft); font-weight:600; }
+  figure { margin:12px 0 14px; page-break-inside:avoid; }
+  figure svg { width:100%; height:auto; display:block; }
+  figcaption { font-size:9.3px; color:var(--muted); margin-top:4px; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <div class="eyebrow">HiTan analyzer · estimator notes</div>
+  <h1>How the Polar Kalman, the Smoother and the Still Model Work</h1>
+  <p class="subtitle">In plain words: what each estimator believes, what it does with a new reading, why the Polar EKF was dropped, and what replaced it.</p>
+  <div class="meta">
+    <span><b>Applies to</b> hitan-core <code>trilateration</code>, hitan-analyzer <code>trilat_pipeline</code></span>
+    <span><b>Written</b> 2026-10-21</span>
+    <span><b>Audience</b> whoever holds the station or tunes the Advanced tab</span>
+  </div>
+</div>
+
+<h2>1. The problem: a direction is a difference of two noisy numbers</h2>
+
+<p>The station carries three anchors in a triangle under a metre across. Each anchor measures how far away the tag is. From three distances you can work out where the tag sits, the same way you would find yourself on a map from your distance to three towers.</p>
+
+<p>Distance is the easy part. All three anchors read nearly the same number, and their average is the distance. Direction is the hard part. If the tag is off to the right, the right anchor reads a little shorter than the left one. How much shorter? At most the width of the station, 0.96 m, and only when the tag is straight out to the side. So the whole direction lives in a difference of a few centimetres between two readings, and each reading is noisy by about 5 cm on a good day.</p>
+
+<figure>
+<svg viewBox="0 0 700 230" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, Arial, sans-serif" font-size="12">
+  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5L0 10z" fill="#5b6470"/></marker></defs>
+  <circle cx="120" cy="60" r="6" fill="#1d4ed8"/><text x="112" y="48" fill="#1a1d23">front</text>
+  <circle cx="168" cy="106" r="6" fill="#1d4ed8"/><text x="178" y="110" fill="#1a1d23">right</text>
+  <circle cx="72" cy="106" r="6" fill="#1d4ed8"/><text x="30" y="110" fill="#1a1d23">left</text>
+  <line x1="72" y1="106" x2="168" y2="106" stroke="#dfe3e8" stroke-width="1.5"/>
+  <text x="84" y="130" fill="#5b6470" font-size="10.5">baseline 0.96 m</text>
+  <circle cx="600" cy="80" r="7" fill="#b9770e"/><text x="590" y="66" fill="#1a1d23">tag</text>
+  <line x1="72" y1="106" x2="600" y2="80" stroke="#1f6f43" stroke-width="1.2" marker-end="url(#ah)"/>
+  <line x1="168" y1="106" x2="600" y2="80" stroke="#c0392b" stroke-width="1.2" marker-end="url(#ah)"/>
+  <text x="300" y="86" fill="#1f6f43" font-size="10.5">left reads r + d</text>
+  <text x="300" y="108" fill="#c0392b" font-size="10.5">right reads r</text>
+  <rect x="40" y="160" width="620" height="56" rx="6" fill="#f4f6f8"/>
+  <text x="52" y="180" fill="#1a1d23" font-size="11">The bearing is d over the baseline. With 5 cm of noise on each range, d is wrong by about 7 cm per round:</text>
+  <text x="52" y="200" fill="#1a1d23" font-size="11">that is 7° of wobble, at 10 m or at 2 km. Distance changes only how far the tag must move to show.</text>
+</svg>
+<figcaption>Figure 1. Direction comes from the small difference between two long, noisy measurements.</figcaption>
+</figure>
+
+<p>That gives roughly 7° of wobble per round in clean air, and 20° or more indoors where reflections stretch one range and not the others. So the raw answer jumps around every round. Every estimator here exists to turn that jumping into a steady needle without lying about where the tag is.</p>
+
+<h2>2. What any Kalman filter does</h2>
+
+<p>Forget the matrices for a moment. A Kalman filter is a very simple habit of mind applied over and over:</p>
+
+<ol>
+  <li><b>Guess.</b> From where the tag was and how it was moving, guess where it is now. Write down how sure you are about that guess. The longer since the last reading, the less sure.</li>
+  <li><b>Measure.</b> Take the new reading. It also comes with a number for how sure you are about it. A reading from a clean round deserves more trust than one from a round with a reflection in it.</li>
+  <li><b>Blend.</b> Move the guess toward the reading. How far? In proportion to the trust. If the guess is sure and the reading is noisy, move a little. If the guess is stale and the reading is clean, move a lot.</li>
+  <li><b>Record how sure you are now.</b> Blending two uncertain things gives something more certain than either. That is the whole trick, and it is why the output is steadier than any single reading.</li>
+</ol>
+
+<p>There is one more habit that matters here. Before blending, compare the reading with the guess. If they disagree by far more than the two uncertainties could explain, the reading is probably a reflection or a broken frame. Do not blend it in. This is called <em>gating</em>, and most of what makes the needle calm is deciding well what to gate.</p>
+
+<div class="note">
+<p><b>The knob called q.</b> Every round the filter grows its uncertainty about the guess by an amount set by <code>q</code>. Big <code>q</code> means "the world changes fast, trust fresh readings". Small <code>q</code> means "the world is calm, trust the guess and average the readings". It is the one setting that trades steadiness against speed. It is the same at every distance on purpose: what grows with distance is the noise of the readings, and that goes into the trust in each reading, not into how fast the station can turn. An earlier version shrank <code>q</code> with distance as well, which counted the same thing twice and made the needle lag a real turn at range.</p>
+</div>
+
+<h2>3. The Polar Kalman: solve first, then smooth</h2>
+
+<p>This is the default estimator. It works in two steps that do not know about each other.</p>
+
+<h3>Step one: solve</h3>
+<p>Take this round's three ranges and work out the tag's position by plain algebra. Subtracting one circle equation from the others leaves two straight-line equations in two unknowns. Solve them, read off a bearing and a distance. No guessing, no memory, no filter yet. This is called "polar" because the result is kept as an angle and a distance rather than x and y.</p>
+
+<p>The solve also says how sure it is. Push the 5 cm of range noise through the geometry and out comes a bearing sigma, about 7° dead ahead and smaller when the tag is off to the side. The filter uses this number as the trust in step two, so a round with one down-weighted range automatically counts for less.</p>
+
+<h3>Step two: two small filters</h3>
+<p>The bearing and the distance are then smoothed by two separate, tiny Kalman filters. Each one tracks a value and its rate of change: the bearing and the turn rate, the distance and the closing speed. Tracking the rate is what lets the needle follow you turning the station instead of lagging behind.</p>
+
+<figure>
+<svg viewBox="0 0 700 150" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, Arial, sans-serif" font-size="11.5">
+  <defs><marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5L0 10z" fill="#5b6470"/></marker></defs>
+  <g stroke="#5b6470" stroke-width="1.2" fill="none">
+    <rect x="10" y="40" width="110" height="60" rx="8"/>
+    <rect x="160" y="40" width="120" height="60" rx="8"/>
+    <rect x="320" y="20" width="150" height="44" rx="8"/>
+    <rect x="320" y="86" width="150" height="44" rx="8"/>
+    <rect x="520" y="40" width="160" height="60" rx="8" stroke="#1d4ed8" stroke-width="2"/>
+    <line x1="120" y1="70" x2="160" y2="70" marker-end="url(#ah2)"/>
+    <line x1="280" y1="60" x2="320" y2="42" marker-end="url(#ah2)"/>
+    <line x1="280" y1="80" x2="320" y2="108" marker-end="url(#ah2)"/>
+    <line x1="470" y1="42" x2="520" y2="60" marker-end="url(#ah2)"/>
+    <line x1="470" y1="108" x2="520" y2="80" marker-end="url(#ah2)"/>
+  </g>
+  <text x="65" y="64" text-anchor="middle" font-weight="600" fill="#1a1d23">3 ranges</text>
+  <text x="65" y="82" text-anchor="middle" fill="#5b6470" font-size="10">after the gates</text>
+  <text x="220" y="64" text-anchor="middle" font-weight="600" fill="#1a1d23">solve</text>
+  <text x="220" y="82" text-anchor="middle" fill="#5b6470" font-size="10">bearing, range, sigma</text>
+  <text x="395" y="38" text-anchor="middle" font-weight="600" fill="#1a1d23">bearing filter</text>
+  <text x="395" y="54" text-anchor="middle" fill="#5b6470" font-size="10">angle + turn rate</text>
+  <text x="395" y="104" text-anchor="middle" font-weight="600" fill="#1a1d23">range filter</text>
+  <text x="395" y="120" text-anchor="middle" fill="#5b6470" font-size="10">distance + closing speed</text>
+  <text x="600" y="64" text-anchor="middle" font-weight="600" fill="#1a1d23">needle + readout</text>
+  <text x="600" y="82" text-anchor="middle" fill="#5b6470" font-size="10">still model calms both</text>
+</svg>
+<figcaption>Figure 2. The Polar Kalman: geometry first, then two independent smoothers.</figcaption>
+</figure>
+
+<p>Each of the two filters has its own gate. The bearing gate is "how far off could a reading be, given my uncertainty, plus how far I could have turned since last round". The range gate is the same idea, plus one percent of the distance and half a metre, because ranging noise grows with range. A reading outside the gate is ignored, and the filter coasts on its guess.</p>
+
+<p>Before any of this, each range passes the quality gates. These follow one rule: a diagnostic number is a weight, never a verdict on its own. A reading whose total power exceeds its first-path power by more than 7 dB is trusted less, and only a gross reflection above 20 dB is dropped outright; a first path much weaker than that anchor has lately been giving is dropped, judged against the anchor's own recent readings rather than a fixed level, because the normal level moves with the radio settings and the room. Whether a range is actually used is decided where it can be judged: two ranges that cannot both be true given the anchor spacing lose the longer one, and the filters gate on the range itself.</p>
+
+<div class="note">
+<p><b>Before the solve: the three readings are not simultaneous.</b> The anchors are polled one after another, about 11 ms apart. Standing still that is nothing; closing at 20 m/s the first anchor polled reads 0.4 m longer than the last, and a 0.2 m left/right difference is a 13° bearing that is not there. Each range therefore carries the time its exchange happened, and the pipeline moves it to the round's moment using the filter's own closing speed before solving (zero while standing still). The smoother does the same with its own rates. Recordings keep the per-anchor time, so a replay aligns the same way.</p>
+</div>
+
+<h3>Two things on top that make it steady in the field</h3>
+
+<ul>
+  <li><b>The snap.</b> Ignoring a wild reading is right for a one-off reflection, but if the distance really did jump, say a reflection gave way to the true range, ignoring it forever would be wrong. So after three rejected readings in a row the filter gives up its guess and snaps to the new value, seeding the closing speed from the slope of those three. The bearing has the same rule: three gated bearings in a row are the new direction, not three reflections.</li>
+  <li><b>Speed limits from physics.</b> The tag cannot move faster than 250 km/h relative to the station, and the closing speed cannot change faster than the station can accelerate plus a term for passing by. Every round the rate is clipped to those bounds, so a coasting filter cannot walk off to infinity.</li>
+</ul>
+
+<h2>4. Standing still: two models that vote</h2>
+
+<p>A plain filter never believes you are standing still. It keeps chasing noise with a small closing speed, and the distance creeps and the arrow wanders. The first version of the filter handled this with a hand-written state machine: a closing speed below a threshold, for so many rounds, with the distance spread over a window below another threshold, and so on, with ten knobs. It worked, but every knob was a guess.</p>
+
+<p>The current version runs <b>two models side by side</b>. One says "nothing is moving": the bearing and the distance are constants with a little random wander, and the rates are pinned to zero. The other is the ordinary moving model from section 3. Every round both are updated with the same readings, and each is scored by how well it predicted them. The score is a likelihood: how surprised was this model by the reading? The probability of each model follows the scores round by round. This is an interacting multiple model, IMM for short, and it has been standard in tracking since the 1980s.</p>
+
+<p>The published state is the probability-weighted mix of the two. When "still" holds 95 % of the probability the readout holds the distance and the arrow barely moves; as "moving" takes over, the rates come back and the needle follows. There are no entry or exit thresholds and no round counts. Two things make it behave well on real data:</p>
+
+<ul>
+  <li><b>One wild reading is evidence of nothing.</b> Each likelihood is capped at three sigmas, so a reflection cannot end a stall by itself. If both models are wrong by more than the cap, the reading is simply not counted, because otherwise the model with the smaller uncertainty, which is always "still", would win by default. A reading the gate rejected does count, as evidence of motion: it left where "still" said it would be by more than the gate allows.</li>
+  <li><b>Slow drift needs a window.</b> A station circling the tag at 1° per round against 3° of noise looks still every single round, and the mixing step restarts the still model from the moving one each round, so its error never builds up. The still model is therefore scored against the mean of the raw readings over the last 1.5 s, "has the range held still over the window?", while the moving model is scored on its own one-round prediction.</li>
+</ul>
+
+<p>The knobs that remain are physical. "Mode memory" is how long standing still or moving is expected to last, which sets how eagerly the vote switches. The two "still drift" numbers are how much the distance and the direction may wander per second while you stand still. The LoRa arc rides the same probability: while still it is calmed, and a consistent turn of the station lifts the calming.</p>
+
+<h2>5. The Polar EKF, and why it was dropped</h2>
+
+<p>For a while there was a third estimator, an extended Kalman filter on the same bearing, turn rate, distance and closing speed, fed by each anchor's range directly instead of by the solved bearing and distance. The idea was that a range is a curve in the state, not a line, so the filter draws the tangent to the curve at its current guess and blends there. The "E" stands for that tangent. It was dropped on 2026-10-21, for these reasons:</p>
+
+<ul>
+  <li><b>The solve has no approximation in it.</b> Subtracting circle equations is algebra, not a tangent. Three ranges, two unknowns: the system is exactly determined, and the answer does not depend on how you weight the anchors. So "weight each anchor by its own trust", the EKF's headline feature, changes nothing about where the point lands.</li>
+  <li><b>The honest sigma was already there.</b> The solve pushes each range sigma through the baseline and reports a bearing sigma. Same number the EKF arrived at, computed once from the geometry, with no filter state that could be wrong.</li>
+  <li><b>Dropping a liar is a free redundancy check.</b> Three ranges and two unknowns leave one degree of redundancy. The pairwise gate uses it before the solve. The EKF ran the same test against its own guess, which could itself be the thing that was wrong.</li>
+  <li><b>The tangent costs more than it buys.</b> At range the three circles are nearly parallel lines, the tangents barely pin the sideways direction, and each iteration pulled the estimate a little differently. In the field it read less stable than the Polar Kalman, and its safety nets (clipping, a deadlock breaker, a reseed) existed only to repair its own confident-wrong states.</li>
+</ul>
+
+<h2>6. The smoother: fit the last second at once</h2>
+
+<p>What replaced the EKF keeps its one good idea, each anchor's range on its own with a robust loss, and drops the tangent-at-a-guess problem by solving many rounds together. The <b>fixed-lag smoother</b> keeps the last second of rounds, about thirty of them, and fits one trajectory through all of them at once: a bearing and a distance per round, tied together by "the turn rate and the closing speed change slowly" (the same <code>q</code> as the Polar Kalman), and tied to the readings by "each anchor's range should match the distance from that anchor to the tag".</p>
+
+<p>Because all thirty rounds are solved together and relinearised together on every iteration, the older rounds, already settled, pin the newer ones. One anchor off a reflection is outvoted by the other two anchors in the same round and by the rounds around it. Its reading is weighted down by a robust loss: with <b>Huber</b> a reading far off the fit pulls as hard as one at the edge and no harder, and three times further out it is dropped; with <b>Cauchy</b> its pull keeps falling with distance, so the densest cluster of readings wins, which is the right rule for one-sided reflections and the wrong one when every reading is biased the same way.</p>
+
+<p>The price is lag. The published state is the round <code>lag s</code> behind the newest, where it has rounds on both sides of it; at the live edge the fit is no steadier than a filter. 0.3 s is the default. The smoother states its own bearing sigma from the fit, hides the needle when that sigma is wider than the limit, and has no still model: standing still, it simply averages the window.</p>
+
+<div class="good">
+<p><b>Which to use.</b> The Polar Kalman when the needle must react at once and you stand still often (it knows when you do). The smoother when steadiness matters more than a third of a second, or indoors where one anchor is often off a reflection.</p>
+</div>
+
+<div class="warn">
+<p><b>What none of them can do.</b> Bearing noise is range noise over a 0.56 m baseline, about 7° per round. No estimator beats that floor; only averaging over time (lag) or a longer baseline does. A longer baseline would need the station's own pose per round, which nothing exposes today.</p>
+</div>
+
+<h2>7. The knobs in plain words</h2>
+
+<table>
+<tr><th>Knob</th><th>What it really is</th><th>Turn it up when</th><th>Turn it down when</th></tr>
+<tr><td><code>filter q</code></td><td>How much the filter expects the world to change between rounds. Sets steadiness against speed. The smoother uses the same number.</td><td>The needle lags a turning station.</td><td>The needle jitters while you stand still.</td></tr>
+<tr><td><code>gate k σ</code></td><td>How many sigmas off a reading may be before it is ignored (the smoother's robust-loss knee too).</td><td>Honest readings are being thrown out.</td><td>Reflections get through and yank the needle.</td></tr>
+<tr><td><code>max slew °/s</code></td><td>Fastest the direction may turn. With "adapt to distance" on, it is the speed limit over the distance.</td><td>A quick swing of the station is not followed.</td><td>The needle flicks on noise.</td></tr>
+<tr><td><code>σ range m</code>, <code>+ per km</code></td><td>How noisy one range is believed to be. Flows into every gate and into the bearing sigma.</td><td>Readings are gated out at long range.</td><td>Far readings are trusted too much.</td></tr>
+<tr><td><code>mode memory s</code></td><td>How long standing still or moving is expected to last. Sets how eagerly the two models swap.</td><td>"Still" flickers on and off.</td><td>It takes too long to notice you walked off.</td></tr>
+<tr><td><code>still drift m²/s</code>, <code>°²/s</code></td><td>How much the distance and the direction may wander per second while standing still.</td><td>A slow creep is called "moving" too soon.</td><td>The readout drifts while you stand still.</td></tr>
+<tr><td><code>window s</code> (smoother)</td><td>How many seconds of rounds are fitted together.</td><td>The needle is still too jumpy.</td><td>A turn takes too long to follow.</td></tr>
+<tr><td><code>lag s</code> (smoother)</td><td>How far behind the newest round the needle is drawn.</td><td>The needle wobbles at the live edge.</td><td>The delay is felt when steering.</td></tr>
+<tr><td><code>hide arrow above σ°</code> (smoother)</td><td>Bearing sigma beyond which no needle is drawn rather than a guess.</td><td>The needle hides too often.</td><td>A wide, meaningless arrow is shown.</td></tr>
+</table>
+
+<p>If one thing has to be remembered: the Polar Kalman is "solve exactly, then smooth with a model of how a station moves and stands still". The smoother is "fit the last second of raw ranges together, robustly, and read the answer a third of a second late". The EKF was "smooth while solving, with an approximation that had to be repaired every round", and on a three-anchor rig that was the worst of the three.</p>
+
+</body>
+</html>

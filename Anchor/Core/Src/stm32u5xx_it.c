@@ -331,8 +331,10 @@ void USART6_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
+// TIM4 ticks at 1 kHz (156 MHz / 156 / 1000). The watchdog was 1000 ticks of the old 2.05 ms
+// tick; 2051 keeps the same 2.05 s.
 void refresh_WD(void)
 {
-	gWD_TIMER = 1000;
+	gWD_TIMER = 2051;
 }
 /* USER CODE END 1 */
