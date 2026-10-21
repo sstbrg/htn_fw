@@ -198,17 +198,31 @@ def fota_status(ser):
     return s
 
 
+class FotaError(Exception):
+    pass
+
+
+def err_text(code):
+    return FOTA_ERR[code] if code < len(FOTA_ERR) else f"error {code}"
+
+
 def fota_cmd(ser, op, payload=b""):
     r = xfer(ser, op, payload)
     if not r or r[0] != op:
-        sys.exit(f"opcode {op:#x}: no reply ({r}); is this board running anc/tag 3.1.0+?")
+        raise FotaError(f"opcode {op:#x}: no reply ({r}); is this board running anc/tag 3.1.0+?")
     return r[1]
 
 
 def fota_enter(ser):
     p = fota_cmd(ser, OP_FOTA_ENTER)
     if p[0] != 0:
-        sys.exit(f"FOTA_ENTER refused: {FOTA_ERR[p[0]]}")
+        raise FotaError(f"FOTA_ENTER refused: {err_text(p[0])}")
+
+
+def fota_exit(ser):
+    p = fota_cmd(ser, OP_FOTA_EXIT)
+    if p[0] != 0:
+        raise FotaError(f"FOTA_EXIT: {err_text(p[0])}")
 
 
 def target_line(s):
@@ -217,73 +231,98 @@ def target_line(s):
             f"app_crc={s['t_app_crc']:#010x}")
 
 
-def cmd_fota(ser, a):
-    img = open(a.bin, "rb").read()
-    check_image(img)
-    kind = image_kind(img) if a.kind is None else {"anchor": 0, "tag": 1}[a.kind]
-    if kind is None:
-        sys.exit("cannot tell anchor vs tag image from its version string; pass --kind")
-    crc = image_crc(img)
-    print(f"image {a.bin}: {image_version(img)} ({'anchor' if kind == 0 else 'tag'}), "
-          f"{len(img)} B, crc={crc:#010x}; target UWB id {a.target}, rate {a.rate}")
-
+def fota_load(ser, img, target, kind, rate, progress=None):
+    """Enter flasher mode and copy the image into the flasher's RAM.
+    progress(done_bytes, total_bytes) is called as chunks are acknowledged."""
     fota_enter(ser)
-    p = fota_cmd(ser, OP_FOTA_LOAD_BEGIN, struct.pack("<HBBII", a.target, kind, RATES[a.rate], len(img), crc))
+    crc = image_crc(img)
+    p = fota_cmd(ser, OP_FOTA_LOAD_BEGIN, struct.pack("<HBBII", target, kind, rate, len(img), crc))
     if p[0] != 0:
-        sys.exit(f"LOAD_BEGIN refused: {FOTA_ERR[p[0]]}")
-    t0 = time.monotonic()
+        raise FotaError(f"LOAD_BEGIN refused: {err_text(p[0])}")
     off = 0
     while off < len(img):
         p = fota_cmd(ser, OP_FOTA_LOAD_DATA, struct.pack("<I", off) + img[off:off + CHUNK])
         status_code, nxt = p[0], struct.unpack_from("<I", p, 1)[0]
         if status_code not in (0, 3):
-            sys.exit(f"LOAD_DATA failed at {off}: {FOTA_ERR[status_code]}")
+            raise FotaError(f"LOAD_DATA failed at {off}: {err_text(status_code)}")
         off = nxt
-    print(f"loaded into flasher RAM in {time.monotonic() - t0:.1f}s")
+        if progress:
+            progress(off, len(img))
+    return crc
 
+
+def fota_run(ser, on_status=None, timeout=120):
+    """Start the UWB session on a loaded flasher and wait until done/failed.
+    on_status(status_dict, state_name) is called on every poll. Returns the final status."""
     p = fota_cmd(ser, OP_FOTA_START)
     if p[0] != 0:
-        sys.exit(f"START refused: {FOTA_ERR[p[0]]}")
-    last = None
-    while True:
+        raise FotaError(f"START refused: {err_text(p[0])}")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         time.sleep(0.25)
         s = fota_status(ser)
         if not s:
             continue
-        state = FL_STATE[s["state"]] if s["state"] < len(FL_STATE) else s["state"]
-        line = f"{state:12} {s['acked']:7}/{s['size']} B  retries {s['retries']:4}  {s['elapsed_ms'] / 1000:6.1f}s"
-        if line != last:
-            print("\r" + line, end="", flush=True)
-            last = line
+        state = FL_STATE[s["state"]] if s["state"] < len(FL_STATE) else str(s["state"])
+        s["state_name"] = state
+        if on_status:
+            on_status(s, state)
         if state in ("done", "failed"):
-            print()
-            if s["t_valid"]:
-                print(target_line(s))
-            if state == "done":
-                print("FOTA OK: target rebooted with the new image, CRC verified")
-            else:
-                print(f"FOTA FAILED: {FOTA_ERR[s['last_err']] if s['last_err'] < len(FOTA_ERR) else s['last_err']}")
-            break
-    if not a.stay:
-        fota_cmd(ser, OP_FOTA_EXIT)
-    return 0 if state == "done" else 1
+            return s
+    raise FotaError("FOTA session did not finish in time")
 
 
-def cmd_query(ser, a):
+def fota_query(ser, target, timeout=4):
+    """Ask UWB target `target` for its version/CRC (enters flasher mode). Returns status or None."""
     fota_enter(ser)
-    p = fota_cmd(ser, OP_FOTA_QUERY, struct.pack("<H", a.target))
+    p = fota_cmd(ser, OP_FOTA_QUERY, struct.pack("<H", target))
     if p[0] != 0:
-        sys.exit(f"QUERY refused: {FOTA_ERR[p[0]]}")
-    deadline = time.monotonic() + 4
+        raise FotaError(f"QUERY refused: {err_text(p[0])}")
+    deadline = time.monotonic() + timeout
     s = None
     while time.monotonic() < deadline:
         time.sleep(0.2)
         s = fota_status(ser)
         if s and FL_STATE[s["state"]] != "query":
             break
+    return s if s and s["t_valid"] else None
+
+
+def cmd_fota(ser, a):
+    img = open(a.bin, "rb").read()
+    check_image(img)
+    kind = image_kind(img) if a.kind is None else {"anchor": 0, "tag": 1}[a.kind]
+    if kind is None:
+        sys.exit("cannot tell anchor vs tag image from its version string; pass --kind")
+    print(f"image {a.bin}: {image_version(img)} ({'anchor' if kind == 0 else 'tag'}), "
+          f"{len(img)} B, crc={image_crc(img):#010x}; target UWB id {a.target}, rate {a.rate}")
+    t0 = time.monotonic()
+    fota_load(ser, img, a.target, kind, RATES[a.rate])
+    print(f"loaded into flasher RAM in {time.monotonic() - t0:.1f}s")
+    last = [None]
+
+    def show(s, state):
+        line = f"{state:12} {s['acked']:7}/{s['size']} B  retries {s['retries']:4}  {s['elapsed_ms'] / 1000:6.1f}s"
+        if line != last[0]:
+            print("\r" + line, end="", flush=True)
+            last[0] = line
+    s = fota_run(ser, show)
+    print()
+    if s["t_valid"]:
+        print(target_line(s))
+    ok = s["state_name"] == "done"
+    print("FOTA OK: target rebooted with the new image, CRC verified" if ok
+          else f"FOTA FAILED: {err_text(s['last_err'])}")
     if not a.stay:
-        fota_cmd(ser, OP_FOTA_EXIT)
-    if s and s["t_valid"]:
+        fota_exit(ser)
+    return 0 if ok else 1
+
+
+def cmd_query(ser, a):
+    s = fota_query(ser, a.target)
+    if not a.stay:
+        fota_exit(ser)
+    if s:
         print(target_line(s))
         return 0
     print(f"no answer from UWB id {a.target}")
@@ -291,8 +330,8 @@ def cmd_query(ser, a):
 
 
 def cmd_fota_exit(ser, _a):
-    p = fota_cmd(ser, OP_FOTA_EXIT)
-    print("left FOTA flasher mode" if p[0] == 0 else f"EXIT: {FOTA_ERR[p[0]]}")
+    fota_exit(ser)
+    print("left FOTA flasher mode")
     return 0
 
 
@@ -324,7 +363,10 @@ def main():
     cmds = {"status": cmd_status, "flash": cmd_flash, "fota": cmd_fota, "query": cmd_query,
             "fota-exit": cmd_fota_exit}
     with serial.Serial(a.port, BAUD, timeout=0.05) as ser:
-        return cmds[a.cmd](ser, a)
+        try:
+            return cmds[a.cmd](ser, a)
+        except FotaError as e:
+            sys.exit(str(e))
 
 
 if __name__ == "__main__":
