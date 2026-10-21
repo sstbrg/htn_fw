@@ -139,9 +139,15 @@ extern "C" {
  * C3.0.64		[fixed] upload bug where SRAM_BKUP_REGISTER would keep update flag value after reset
  * C3.0.65		[added] reset counter report
  * C3.0.66		[added] BackOFF(dwScanMode) ctrl bit. 1 = enable, 0  = disable. default enable
+ * anc3.1.0	[added] FOTA over UWB (fota.c): FOTA flasher mode via UART opcodes 0x40-0x47,
+ * 				FOTA target in dwScanMode. Image received into RAM, CRC checked, written from RAM.
+ * anc3.1.1	[added] FOTA discovery, auto data-rate fallback, battery check
+ * anc3.1.2	[changed] battery gauge read on every anchor; FOTA reports 255 only when no gauge answers
+ * anc3.1.3	[added] FOTA LEDs: target blinks from the handshake, loader link LED while loading
+ * anc3.1.4	[fixed] a tag stays awake while it counts down as FOTA target
  */
 
-#define VERSION "sC3.0.67"
+#define VERSION "anc3.1.4"
 
 
 #define IS_TAG false

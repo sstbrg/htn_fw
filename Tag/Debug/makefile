@@ -95,8 +95,8 @@ all: main-build
 main-build: Tag.elf secondary-outputs
 
 # Tool invocations
-Tag.elf Tag.map: $(OBJS) $(USER_OBJS) C:\projects\HITAN_reut\hitan-stm-reut\Tag\STM32U5A5ZJTXQ_FLASH_MMT_TEMPLATE.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-g++ -o "Tag.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m33 -T"C:\projects\HITAN_reut\hitan-stm-reut\Tag\STM32U5A5ZJTXQ_FLASH_MMT_TEMPLATE.ld" -Wl,-Map="Tag.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv5-sp-d16 -mfloat-abi=hard -mthumb -u _printf_float -Wl,--start-group -lc -lm -lstdc++ -lsupc++ -Wl,--end-group
+Tag.elf Tag.map: $(OBJS) $(USER_OBJS) ../STM32U5A5ZJTXQ_FLASH_MMT_TEMPLATE.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-g++ -o "Tag.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m33 -T"../STM32U5A5ZJTXQ_FLASH_MMT_TEMPLATE.ld" -Wl,-Map="Tag.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv5-sp-d16 -mfloat-abi=hard -mthumb -u _printf_float -Wl,--start-group -lc -lm -lstdc++ -lsupc++ -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 

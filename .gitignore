@@ -11,6 +11,13 @@
 *.list
 objects.list
 
+# Python
+__pycache__/
+.venv/
+
+# Local firmware releases (tools/htn_fota/fw_release.py); published ones live in GitHub releases
+releases/
+
 # Eclipse / CubeIDE workspace state
 .metadata/
 *.launch.bak

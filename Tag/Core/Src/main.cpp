@@ -41,6 +41,7 @@
 #include "stm32u5xx_hal_usart.h"
 #include "uart_communication.h"
 #include "burn_mode.h"
+#include "fota.h"
 #include "BMI088.h"
 #include "stm32u5xx_it.h"
 /* USER CODE END Includes */
@@ -247,10 +248,11 @@ int main(void)
 	while  (1)
 	{
 		refresh_WD();
+		fota_poll();
 
 		//	UWB
 
-		if (dwmInfo.no_uwb == false)
+		if (dwmInfo.no_uwb == false && !fota_busy())
 		{
 			if (dwRange())
 			{
@@ -258,7 +260,7 @@ int main(void)
 			}
 		}
 		//	LoRa
-		if (lora_rxInfo.no_lora == false){
+		if (lora_rxInfo.no_lora == false && !fota_busy()){
 			if (lora_rxInfo.wakeup_detected == true){
 
 				if (Lora_TXidle() && !PWR_NeedToSleep())
@@ -344,7 +346,8 @@ int main(void)
 			}
 
 			default:
-				UART_Reply_error(&msg, &reply);
+				if (!fota_uart_command((uint8_t*) &msg, RxLen))
+					UART_Reply_error(&msg, &reply);
 				break;
 			}
 		}
@@ -353,7 +356,7 @@ int main(void)
 
 #ifndef WITHOUT_WAKEUP
 		{	//	Low power handling
-			if(Lora_TXidle() && PWR_NeedToSleep()){
+			if(Lora_TXidle() && PWR_NeedToSleep() && !fota_keep_awake()){
 				lora_rxInfo.wakeup_cycle_enable = true;
 				PWR_Sleep();
 				wakeup_switch = false;

@@ -69,6 +69,27 @@ uint16_t RRC2040_GetBatteryStatus(I2C_HandleTypeDef *hi2c) {
     return status;
 }
 
+// Battery charge 0..100 %, or RRC2040_NO_GAUGE when no battery answers on I2C
+// (AbsoluteStateOfCharge() returns 0 for both). A failed read costs up to
+// ~110 ms of I2C timeouts, so after a failure it is retried at most every 5 s.
+uint8_t RRC2040_Soc(I2C_HandleTypeDef *hi2c) {
+	static uint8_t last = RRC2040_NO_GAUGE;
+	static uint8_t tried = 0;
+	static uint32_t last_fail = 0;
+	uint16_t soc;
+
+	if (tried && last == RRC2040_NO_GAUGE && HAL_GetTick() - last_fail < 5000)
+		return last;
+	tried = 1;
+	if (RRC2040_ReadWord(hi2c, RRC2040_CMD_ABSOLUTE_SOC, &soc) == HAL_OK) {
+		last = MIN(soc, 100);
+	} else {
+		last = RRC2040_NO_GAUGE;
+		last_fail = HAL_GetTick();
+	}
+	return last;
+}
+
 uint8_t AbsoluteStateOfCharge(I2C_HandleTypeDef *hi2c) {
 	soc_battery = 0;
     RRC2040_ReadWord(hi2c, RRC2040_CMD_ABSOLUTE_SOC, &soc_battery);
