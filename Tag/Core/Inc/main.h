@@ -152,9 +152,10 @@ extern "C" {
  *				command + ack, extended UWB poll v2 backup; items: listen period, antenna delays, crystal trim.
  * tag3.2.1	issue #5: a legacy poll from the steering station keeps LoRa power and LDE preset; built WITH wakeup (sleeps until woken); no sleep during a command window
  * tag3.3.0	#7 range profiles: prepare/commit items, 500 ms / 1 s reverts, profile-0 listen rotation, config watchdog; beacon SF per profile, commands and wake-ups SF12
+ * tag3.3.1	Radio watchdog checks preamble, SFD timeout, channel and PAC too (tells P1 from P2); mismatch -> full re-init on profile 0 (#7)
  */
 
-#define VERSION "tag3.3.0"
+#define VERSION "tag3.3.1"
 
 #define IS_TAG true
 

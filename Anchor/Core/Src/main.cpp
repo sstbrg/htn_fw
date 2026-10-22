@@ -381,8 +381,10 @@ int main(void)
 		refresh_WD();
 		fota_poll();
 		(void)Backoff_Left();	// clears an expired deadline every pass (wrap safety)
-		if (!fota_busy())
+		if (!fota_busy()) {
 			dwRecover();
+			dwRadioWatch();
+		}
 
 		uint8_t RxLen = UART_GetMessage((uint8_t*) &msg, sizeof(msg));
 		if ((RxLen != RX_EMPTY) && Validate_UART(&msg, RxLen)) {
@@ -564,6 +566,7 @@ int main(void)
   				dwt_write8bitoffsetreg(msg.op_write_uwb_raw_req.reg_id, msg.op_write_uwb_raw_req.reg_offset,msg.op_write_uwb_raw_req.buffer[0]);
   				if (msg.op_write_uwb_raw_req.reg_id == LDE_IF_ID && msg.op_write_uwb_raw_req.reg_offset == LDE_CFG1_OFFSET)
   					lde_cfg1 = msg.op_write_uwb_raw_req.buffer[0];	// survives dwConfig() re-runs
+  				dwNoteConfig();	// a deliberate channel / PAC change is not a fault; profile fields still are
   				UART_Reply_Write_UWB_Raw(&msg, &reply);
   				break;
   			}

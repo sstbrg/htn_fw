@@ -186,6 +186,15 @@ void dwConfig(dwt_config_t *config) {
 	dwt_setfinegraintxseq(0);
 
 	dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_TXFRS);
+	dwNoteConfig();
+}
+
+// Channel control and PAC tuning as dwConfig() left them, for the radio watchdog (dwRadioWatch).
+static uint32_t dw_chan_ctrl = 0, dw_drx_tune2 = 0;
+
+void dwNoteConfig(void) {
+	dw_chan_ctrl = dwt_read32bitreg(CHAN_CTRL_ID);
+	dw_drx_tune2 = dwt_read32bitoffsetreg(DRX_CONF_ID, DRX_TUNE2_OFFSET);
 }
 
 void dwScanMode(void) {
@@ -890,15 +899,19 @@ static const struct { uint8_t br; uint16_t plen, pac, sfdto; uint8_t lora_sf; } 
 	{ DWT_BR_850K, DWT_PLEN_512,  DWT_PAC16, 512 + 1 + 16 - 16,  0x08 },	// 2 near: SF8
 };
 
+static void link_profile_fields(uint8_t p) {
+	config.dataRate = prof_tab[p].br;
+	config.txPreambLength = prof_tab[p].plen;
+	config.rxPAC = prof_tab[p].pac;
+	config.sfdTO = prof_tab[p].sfdto;
+}
+
 static void link_use_profile(uint8_t p) {
 	if (p >= LINK_PROFILES)
 		p = 0;
 	if (p == link_st.prof_rx)
 		return;
-	config.dataRate = prof_tab[p].br;
-	config.txPreambLength = prof_tab[p].plen;
-	config.rxPAC = prof_tab[p].pac;
-	config.sfdTO = prof_tab[p].sfdto;
+	link_profile_fields(p);
 	dwt_forcetrxoff();
 	dwConfig(&config);		// antenna delays, LDE preset, timeouts: all re-applied
 	link_st.prof_rx = p;
@@ -939,6 +952,50 @@ void Link_IdleTick(void) {
 		Link_ProfileGround(PROF_R_SILENCE);
 		link_use_profile(0);
 	}
+}
+
+/* Radio watchdog (#7): the DW1000 must run the configuration the firmware last wrote. Device id,
+ * data rate (TX and RX), preamble length and SFD timeout are checked against the profile table,
+ * channel control and PAC tuning against what dwConfig() left. A brown-out, a chip reset or a bad
+ * SPI write -> profile 0 with a full re-initialisation; the owner tells the tag over LoRa, and the
+ * tag reaches profile 0 on its own within 1 s anyway. */
+static bool dw_radio_matches(uint8_t p) {
+	if (p >= LINK_PROFILES || dwt_readdevid() != DWT_DEVICE_ID)
+		return false;
+	uint32_t fctrl = dwt_read32bitreg(TX_FCTRL_ID);
+	bool rx110k = (dwt_read32bitreg(SYS_CFG_ID) & SYS_CFG_RXM110K) != 0;
+	return rx110k == (prof_tab[p].br == DWT_BR_110K)
+		&& ((fctrl & TX_FCTRL_TXBR_MASK) >> TX_FCTRL_TXBR_SHFT) == prof_tab[p].br
+		&& (fctrl & TX_FCTRL_TXPSR_PE_MASK) == (((uint32_t)prof_tab[p].plen << TX_FCTRL_TXPRF_SHFT) & TX_FCTRL_TXPSR_PE_MASK)
+		&& dwt_read16bitoffsetreg(DRX_CONF_ID, DRX_SFDTOC_OFFSET) == prof_tab[p].sfdto
+		&& dwt_read32bitreg(CHAN_CTRL_ID) == dw_chan_ctrl
+		&& dwt_read32bitoffsetreg(DRX_CONF_ID, DRX_TUNE2_OFFSET) == dw_drx_tune2;
+}
+
+static uint32_t dw_watch_tick = 0;
+
+// Main loop, outside any exchange and FOTA: once a second.
+void dwRadioWatch(void) {
+	uint32_t now = HAL_GetTick();
+	if (dwmInfo.no_uwb || now - dw_watch_tick < 1000)
+		return;
+	dw_watch_tick = now;
+	if (link_st.prof_rx >= LINK_PROFILES) {	// after a recovery: write profile 0 once, check next time
+		link_use_profile(0);
+		return;
+	}
+	if (dw_radio_matches(link_st.prof_rx))
+		return;
+	if (link_cfg.lora_owner && link_st.prof_cur != 0)
+		Link_ItemQueue(dwmInfo.tag_dest, LITEM_PROFILE_COMMIT, 0);
+	link_st.prof_rx = 0;	// the state goes to profile 0 without writing the suspect chip...
+	Link_ProfileGround(PROF_R_WATCHDOG);
+	link_st.prof_reason = PROF_R_WATCHDOG;
+	link_profile_fields(0);	// ...which gets profile 0 from a full re-initialisation
+	if (dwmInit())		// on failure no_uwb is set; dwRecover() retries every 5 s with config
+		dwConfig(&config);
+	else
+		link_st.prof_rx = 0xFF;	// written again after the recovery
 }
 
 static bool link_profile_allowed(void) {
