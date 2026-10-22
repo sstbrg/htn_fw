@@ -315,6 +315,7 @@ static void lora_handle_command(void) {
 		return;
 	}
 	cmd_tick = HAL_GetTick();
+	PWR_SetTimeOut(PWR_Duration_MyMessage);	// an anchor is talking to this tag: stay awake
 	lora_ack.magic = LACK_MAGIC;
 	lora_ack.tag_id = SELF_ID;
 	lora_ack.seq = c->seq;
@@ -333,6 +334,11 @@ static void lora_handle_command(void) {
 	lora_tx_tick = HAL_GetTick();
 	Radio.SetTx(radioConfiguration.txTimeout);
 	lstate = LS_ACK;
+}
+
+// Sleep only from plain beacon mode: normal IQ, the setting the wake listener needs.
+bool Lora_TagCanSleep(void) {
+	return lstate == LS_BEACON;
 }
 
 void Lora_TagService(status_bits errors) {
