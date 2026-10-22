@@ -1,0 +1,43 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="HITAN firmware user manual: build, flash, FOTA, UART protocol, operation and source map."><title>User manual - HITAN Firmware</title><link rel="stylesheet" href="style.css"></head><body>
+<header><a class="brand" href="index.html"><svg class="cat" viewBox="0 0 350 350" role="img" aria-label="Black cat with green eyes"><rect x="6" y="24" width="252" height="252" rx="29" fill="none" stroke="#211f20" stroke-width="5"/><path fill="#211f20" d="M53 123c11-25 21-40 55-48 39-9 76-5 111-14 35-9 83-33 99-51 10-11 24-4 21 9-4 19-38 36-68 51-24 12-43 22-48 40-7 24 0 48 11 64 15 22 15 38 3 55-10 15-19 26-23 47h-38c16-14 21-33 8-48-14-16-35-15-54-1-18 14-37 46-78 115l-34-6c28-38 37-66 48-96 8-23 11-40 10-54-16 13-47 16-76 12v-37c20-2 32-17 53-38Z"/><path fill="#211f20" d="M0 130c28-2 48 3 78 1l23-27 8 30c8 27 2 52-11 68-15 20-38 24-98 16Z"/><circle cx="30" cy="165" r="18.5" fill="#39d51d"/><circle cx="76" cy="165" r="18.5" fill="#39d51d"/></svg><span><strong>HITAN FIRMWARE</strong><small>User manual &middot; Anchor / Tag / bootloader</small></span></a><nav class="nav"><a aria-current="page" href="index.html">Manual home</a><a href="overview.html">Overview</a><a href="build-flash.html">Build &amp; flash</a><a href="tools.html">PC tools</a><a href="fota.html">FOTA</a><a href="operation.html">Operation</a><a href="protocol.html">UART protocol</a><a href="config.html">Configuration</a><a href="troubleshooting.html">Troubleshooting</a><a href="src-map.html">Source map</a></nav></header>
+<main><section class="hero"><div class="eyebrow">User manual</div><h1>HITAN firmware</h1><p class="lead">Anchor, Tag and bootloader firmware for the STM32U5A5 based HITAN UWB and LoRa ranging boards: how to build it, flash it, update it over the air, talk to it, and find your way around the source.</p></section>
+
+<div class="grid">
+<article class="card"><h3>Overview</h3><p>What the Anchor, Tag and bootloader are, how they talk to each other and to a PC, and where everything lives in flash.</p><a href="overview.html">Overview &rarr;</a></article>
+<article class="card"><h3>Build &amp; flash</h3><p>Toolchain, building from the command line, flashing with an ST-Link or over USB, and the memory layout rules that protect the bootloader.</p><a href="build-flash.html">Build &amp; flash &rarr;</a></article>
+<article class="card"><h3>PC tools</h3><p>The FOTA wizard, the <code>htn_fw.py</code> command line, release management and the CI pipeline.</p><a href="tools.html">PC tools &rarr;</a></article>
+<article class="card"><h3>FOTA</h3><p>Updating a board over the air through UWB: the session, the safety checks, the LEDs and the failure modes.</p><a href="fota.html">FOTA &rarr;</a></article>
+<article class="card"><h3>Operation</h3><p>What a running anchor and tag do: ranging, LoRa beacons, sleep and wake-up, backoff, link adaptation, range profiles, watchdogs.</p><a href="operation.html">Operation &rarr;</a></article>
+<article class="card"><h3>UART protocol</h3><p>Frame format, every opcode, reply layouts, status and error bits.</p><a href="protocol.html">UART protocol &rarr;</a></article>
+<article class="card"><h3>Configuration</h3><p>Board and tag ids, the self-id flash page, antenna delays, crystal trim, backoff window, link features and the configuration channel.</p><a href="config.html">Configuration &rarr;</a></article>
+<article class="card"><h3>Troubleshooting</h3><p>Symptoms, causes and the fix for the problems met in the field and on the bench.</p><a href="troubleshooting.html">Troubleshooting &rarr;</a></article>
+<article class="card"><h3>Source map</h3><p>Every file in the repository and what it contains.</p><a href="src-map.html">Source map &rarr;</a></article>
+</div>
+
+<h2>What this repository is</h2>
+<p>The repository holds the firmware for the HITAN ranging system. A HITAN <b>station</b> is a set of up to four <b>anchors</b> that measure the distance to a <b>tag</b> using DW1000 ultra-wideband (UWB) two-way ranging and receive the tag's status over LoRa. A PC application drives the anchors over USB serial. Three STM32CubeIDE projects build the code that runs on the boards:</p>
+<div class="table-wrap"><table><thead><tr><th>Project</th><th>Runs on</th><th>Current version</th><th>Role</th></tr></thead><tbody>
+<tr><td><code>Anchor/</code></td><td>Anchor board</td><td><code>anc4.0.0</code></td><td>Ranging initiator, LoRa receiver, UART slave of the PC, FOTA loader and target.</td></tr>
+<tr><td><code>Tag/</code></td><td>Tag board</td><td><code>tag3.3.1</code></td><td>Ranging responder, LoRa beacon transmitter, battery powered, sleeps when idle.</td></tr>
+<tr><td><code>bootloader_hitan/</code></td><td>Both</td><td><code>sC3.0.65</code></td><td>Lives in flash bank 1, validates the application and accepts a new one over UART.</td></tr>
+</tbody></table></div>
+
+<h2>Quick start</h2>
+<ol class="steps">
+<li><b>Set up the tools.</b> Install the ARM toolchain and create the Python virtual environment as described in <a href="build-flash.html">Build &amp; flash</a> and <a href="tools.html">PC tools</a>. Add your user to the <code>dialout</code> group.</li>
+<li><b>Build.</b> From the repository root run <code>tools/build.sh Anchor</code> or <code>tools/build.sh Tag</code>. The images appear in <code>&lt;Project&gt;/Debug/</code>.</li>
+<li><b>Flash.</b> A board that already runs a HITAN image is updated over the air with the wizard, or over USB with <code>htn_fw.py flash</code>. A blank board needs the bootloader first, through an ST-Link.</li>
+<li><b>Check.</b> <code>htn_fw.py --port /dev/ttyUSB0 status</code> prints the version, hardware revision, id and error bits of the board.</li>
+</ol>
+
+<div class="callout warn"><b>Two rules that protect the hardware.</b> Application images are linked at <code>0x08200000</code>. Flash the <code>.hex</code> (it carries its own addresses); never write an application <code>.bin</code> to <code>0x08000000</code>, which would overwrite the bootloader. All serial ports run at <b>921600</b> baud; a different baud can leave the board's UART deaf until a power cycle.</div>
+
+<h2>Conventions used in this manual</h2>
+<ul>
+<li>Commands run from the repository root. <code>PY</code> stands for <code>tools/htn_fota/.venv/bin/python</code>.</li>
+<li>Multi-byte values on the UART and in UWB/LoRa frames are little-endian. Every structure is packed.</li>
+<li>Versions are written <code>anc&lt;major&gt;.&lt;minor&gt;.&lt;patch&gt;</code> and <code>tag&lt;major&gt;.&lt;minor&gt;.&lt;patch&gt;</code>. They live in the <code>VERSION</code> define of each project's <code>main.h</code>.</li>
+<li>Section labels such as 9D or 9J, and issue numbers such as #5 and #7, refer to the design document <code>documentation/HITAN_firmware_changes.html</code> and to the GitHub issues of the repository. The design document is frozen; new requirements go through issues.</li>
+</ul>
+
+</main><footer><a href="overview.html">Overview &rarr;</a><p>HITAN firmware user manual. Covers Anchor anc4.0.0, Tag tag3.3.1 and bootloader sC3.0.65.</p></footer></body></html>
