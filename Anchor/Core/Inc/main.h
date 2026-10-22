@@ -162,9 +162,10 @@ extern "C" {
  * 				[added] 9G preset sent to the tag in the extended poll; extended frames also with 9G alone.
  * 				[added] configuration channel (opcode 24): LoRa commands (inverted IQ) into the tag's listen
  * 				slots, extended UWB poll v2 as backup; beacon parse checks GetPayload; bench UWB level pin.
+ * anc3.2.1	issue #5: same-station legacy polls keep the tag's LoRa power/LDE; owner-only fast fallback; station UWB level and LDE preset (opcode 22 bytes 11-12)
  */
 
-#define VERSION "anc3.2.0"
+#define VERSION "anc3.2.1"
 
 
 #define IS_TAG false
@@ -298,6 +299,9 @@ typedef struct {
 #define LINK_LDE_HOLD       10      // exchanges beyond the threshold before the LDE preset flips
 #define LINK_LDE_NLOS       0x67    // NTM 7 / PMULT 3 (APS006 Pt 2)
 #define LINK_K_MAX          5
+#define LINK_STATION_HOLD_MS 2000   // station UWB level held at maximum after two misses
+#define LINK_MISS_OWNER      2      // unanswered extended polls before legacy frames: LoRa owner
+#define LINK_MISS_OTHER      10     //   other anchors (a miss costs their exchange, not the station's link)
 #define LINK_STRONG_DBM     (-90.0f) // 9F/9G act only above this rx level: near sensitivity (km range) RX-FP is
                                     // high from noise, the NLOS threshold and "keep the shortest" would pick noise
 
@@ -313,6 +317,10 @@ typedef struct {            // opcode 22 payload, in order
     uint8_t step_interval_ds;   // minimum time between steps away from robustness, 0.1 s
     uint8_t lora_owner;     // 1 = this anchor runs the LoRa loop (one per station)
     uint8_t uwb_level_pin;  // bench: fixed UWB level for the tag's responses (needs bit2), 0xFF = automatic
+    // Station values (issue #5): the host decides for the whole station and sends the same value
+    // to all its anchors; 0xFF = this anchor decides alone. K for the station is byte 1 (k_max).
+    uint8_t uwb_level_station;  // UWB level 0..7 (needs bit2); two misses -> maximum for LINK_STATION_HOLD_MS
+    uint8_t lde_station;        // 0 = LOS, 1 = NLOS preset, for anchor and tag (needs bit1)
 } LinkCfg_t;
 
 typedef struct {
@@ -352,6 +360,8 @@ typedef struct {
     uint32_t last_lora_tick;
     // 9F / 9G
     uint32_t coexist_tick;  // last time the tag reported two stations or this anchor's backoff was armed (9K)
+    uint8_t  station_hold;  // station UWB level dropped to maximum after misses
+    uint32_t station_hold_tick;
     uint8_t  lde_nlos;      // NLOS preset active
     uint8_t  lde_count;
     float    last_rxfp_db;

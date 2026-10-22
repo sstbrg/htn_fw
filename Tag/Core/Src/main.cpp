@@ -54,7 +54,9 @@
 #include <stdio.h>
 
 
-#define WITHOUT_WAKEUP
+// Tags are built WITH wakeup (sleep until an anchor wakes them over LoRa). Uncomment only for a
+// bench image that never sleeps.
+//#define WITHOUT_WAKEUP
 
 /* USER CODE END PTD */
 
@@ -439,7 +441,9 @@ int main(void)
 
 #ifndef WITHOUT_WAKEUP
 		{	//	Low power handling
-			if(Lora_TXidle() && PWR_NeedToSleep() && !fota_keep_awake()){
+			// Lora_TagCanSleep(): never with a command window or ack in progress, whose inverted IQ would
+			// leave the sleeping radio deaf to wake messages
+			if(Lora_TXidle() && Lora_TagCanSleep() && PWR_NeedToSleep() && !fota_keep_awake()){
 				lora_rxInfo.wakeup_cycle_enable = true;
 				PWR_Sleep();
 				wakeup_switch = false;

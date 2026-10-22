@@ -591,7 +591,8 @@ void dwLatchExchange(void) {
  */
 LinkCfg_t link_cfg = { .features = 0, .k_max = 0, .lora_target_dbm = -70, .lora_band_db = 6,
 		.uwb_target_dbm = -80, .uwb_band_db = 5, .profile_max = 0, .profile_override = 0xFF,
-		.step_interval_ds = 20, .lora_owner = 0, .uwb_level_pin = 0xFF };
+		.step_interval_ds = 20, .lora_owner = 0, .uwb_level_pin = 0xFF,
+		.uwb_level_station = 0xFF, .lde_station = 0xFF };
 LinkState_t link_st;
 
 static uint32_t link_step_ms(void) {
@@ -612,6 +613,7 @@ static void link_reset(void) {
 	link_st.uwb_level = link_st.uwb_prev = 0;
 	link_st.uwb_good = link_st.uwb_miss = link_st.uwb_mismatch = 0;
 	link_st.uwb_floor = LINK_UWB_LEVELS - 1;
+	link_st.station_hold = 0;
 	link_st.lora_phase = LINK_LP_IDLE;
 	link_st.lora_cur = link_st.lora_req = LINK_LORA_MAX_DBM;
 	link_st.lora_tries = link_st.lora_good = 0;
@@ -717,8 +719,15 @@ void Link_FillExtPoll(twr_anchor_ext_msg_t *p) {
 		p->req_uwb_level = 0;
 		return;
 	}
-	if ((link_cfg.features & LINK_F_POWER) && link_cfg.uwb_level_pin < LINK_UWB_LEVELS)
+	if ((link_cfg.features & LINK_F_POWER) && link_cfg.uwb_level_pin < LINK_UWB_LEVELS) {
 		link_st.uwb_level = link_cfg.uwb_level_pin;	// bench pin; the loop below does not move it
+	} else if ((link_cfg.features & LINK_F_POWER) && link_cfg.uwb_level_station < LINK_UWB_LEVELS) {
+		// the station's level, from the host; after misses, maximum for a while (unilateral)
+		if (link_st.station_hold && HAL_GetTick() - link_st.station_hold_tick >= LINK_STATION_HOLD_MS)
+			link_st.station_hold = 0;
+		uint8_t lvl = link_st.station_hold ? 0 : link_cfg.uwb_level_station;
+		link_st.uwb_level = (lvl > link_st.uwb_floor) ? link_st.uwb_floor : lvl;
+	}
 	p->req_uwb_level = link_st.uwb_level;
 
 	if (!link_lora_active()) {
@@ -969,6 +978,15 @@ static float link_fp_power_dbm(void) {
 static void link_lde_update(float rxfp, float rx) {
 	if (!(link_cfg.features & LINK_F_LDE_AUTO))
 		return;
+	if (link_cfg.lde_station <= 1) {	// the host sets the station's preset; the tag follows it
+		if (link_st.lde_nlos != link_cfg.lde_station) {
+			link_st.lde_nlos = link_cfg.lde_station;
+			link_st.lde_count = 0;
+			dwt_write8bitoffsetreg(LDE_IF_ID, LDE_CFG1_OFFSET, dwLdeCfg1());
+			dwt_rxreset();
+		}
+		return;
+	}
 	bool nlos = (rx > LINK_STRONG_DBM) && (rxfp > LINK_RXFP_SOFT_DB + 1.0f);
 	bool los = (rx <= LINK_STRONG_DBM) || (rxfp < LINK_RXFP_SOFT_DB - 1.0f);
 	bool flip = link_st.lde_nlos ? los : nlos;
@@ -1004,15 +1022,24 @@ void Link_OnExchange(uint8_t result, bool first, bool ext_poll, bool ext_resp) {
 	if (result == EX_NONE) {
 		if (!first)		// a repeat that goes unanswered (tag still re-arming) proves nothing
 			return;
-		// extended polls go unanswered: legacy frames (a bench level pin rides out a weak level)
-		if (++link_st.ext_miss >= ((link_cfg.uwb_level_pin < LINK_UWB_LEVELS) ? 20 : 2)) {
+		// extended polls go unanswered: legacy frames. Only the LoRa owner falls back quickly; for
+		// the others a miss costs their own exchange, not the station's link state (issue #5). A
+		// bench level pin rides out a weak level.
+		uint8_t limit = (link_cfg.uwb_level_pin < LINK_UWB_LEVELS) ? 20
+				: (link_cfg.lora_owner ? LINK_MISS_OWNER : LINK_MISS_OTHER);
+		if (++link_st.ext_miss >= limit) {
 			link_fallback();
 			return;
 		}
 		{
 			link_st.uwb_good = 0;
-			if (++link_st.uwb_miss >= 2)
+			if (++link_st.uwb_miss >= 2) {
 				link_st.uwb_level = link_st.uwb_prev = 0;
+				if (link_cfg.uwb_level_station < LINK_UWB_LEVELS) {	// the station level waits too
+					link_st.station_hold = 1;
+					link_st.station_hold_tick = HAL_GetTick();
+				}
+			}
 			else if (link_st.uwb_prev < link_st.uwb_level)
 				link_st.uwb_level = link_st.uwb_prev;	// undo the last quieter step
 		}
@@ -1024,8 +1051,8 @@ void Link_OnExchange(uint8_t result, bool first, bool ext_poll, bool ext_resp) {
 	if (link_st.echo_uwb_level != link_st.uwb_level)
 		return;
 
-	if (link_cfg.uwb_level_pin < LINK_UWB_LEVELS)
-		return;		// pinned for a bench sweep
+	if (link_cfg.uwb_level_pin < LINK_UWB_LEVELS || link_cfg.uwb_level_station < LINK_UWB_LEVELS)
+		return;		// pinned for a bench sweep, or the host sets the station's level
 	float rx = link_rx_power_dbm();
 	int target = link_cfg.uwb_target_dbm, band = link_cfg.uwb_band_db;
 	if (rx < target - band) {	// louder at once

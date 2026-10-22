@@ -150,9 +150,10 @@ extern "C" {
  *				[added] LDE preset from the anchor's extended poll (9G), LOS on a legacy poll / two stations / 1 s silence.
  *				[added] configuration channel: LoRa listen window after every 1st/4th/20th beacon, inverted-IQ
  *				command + ack, extended UWB poll v2 backup; items: listen period, antenna delays, crystal trim.
+ * tag3.2.1	issue #5: a legacy poll from the steering station keeps LoRa power and LDE preset; built WITH wakeup (sleeps until woken); no sleep during a command window
  */
 
-#define VERSION "tag3.2.0"
+#define VERSION "tag3.2.1"
 
 #define IS_TAG true
 

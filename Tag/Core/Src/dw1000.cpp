@@ -13,6 +13,7 @@ static uint32 status_reg = 0;
 static uint8_t uwb_tx_level = 0;	// level in TX_POWER now; anything but a ranging response goes at 0
 static bool lde_nlos = false;		// 9G: LDE_CFG1 at the NLOS preset (the anchor asks in its extended poll)
 static uint32_t last_ext_tick = 0;	// last extended poll: without one for LINK_SILENCE_MS, back to LOS
+static uint16_t steer_pc = 0xFFFF;	// PC id (station) of the last extended poll: it steers this tag
 
 extern uint32_t _1ms_tick; //timer TIM4 1ms
 extern uint8_t HW_Version;
@@ -504,6 +505,7 @@ int dwRange(void) {
 			 * poll carries this response's UWB level and the owner anchor's LoRa request. */
 			if (ext) {
 				last_ext_tick = HAL_GetTick();
+				steer_pc = rx_buffer.src >> 2;
 				dwSetLde(!multi && (rx_buffer.ctrl & LINK_CTRL_LDE_NLOS));	// takes effect for the next poll
 				uint8_t flags = lora_rxInfo.no_lora ? LINK_RESP_NO_LORA : 0;
 				if (lde_nlos)
@@ -537,9 +539,17 @@ int dwRange(void) {
 					dwt_writetxfctrl(sizeof(tx_resp_ext), 0, 1);
 				}
 			} else {
-				dwSetTxLevel(0);
-				dwSetLde(false);	// a legacy poll means the ground state
-				Lora_LinkMax();
+				dwSetTxLevel(0);	// this reply at maximum: the UWB level is per exchange
+				// A legacy poll from another station (or with nothing steering the tag) means the
+				// ground state. From the steering station it is one of its anchors on legacy frames
+				// for a moment (hello, a fallback): LoRa power and LDE preset stay the station's
+				// (issue #5); the tag's own silence reverts still apply.
+				bool same_station = steer_pc == (rx_buffer.src >> 2) && !multi
+						&& HAL_GetTick() - last_ext_tick < LINK_SILENCE_MS;
+				if (!same_station) {
+					dwSetLde(false);
+					Lora_LinkMax();
+				}
 				tx_resp_msg.tag_no_lora = lora_rxInfo.no_lora;
 				if (rx_buffer.i9 == LINK_HELLO)	// a new anchor asks: say we can do extended frames
 					tx_resp_msg.tag_no_lora |= LINK_CAPABLE | (LINK_VERSION << 1) | (multi ? LINK_CAPABLE_MULTI : 0);
