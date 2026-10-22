@@ -442,6 +442,7 @@ typedef enum
 	/*24*/UART_OPCODE_TAG_CONFIG = 24,		// configuration item to the tag over LoRa, UWB as backup; empty = status
 	/*23*/UART_OPCODE_XTAL_TRIM = 23,		// DW1000 crystal trim {trim 0..31, 0xFF = clear} in flash; empty = read
 	/*22*/UART_OPCODE_SET_LINK_FEATURES = 22,	// LinkCfg_t (doc 9I), a shorter payload sets the leading fields; empty = read
+	/*26*/UART_OPCODE_READ_IMU = 26,		// one BMI088 sample: raw acc/gyr/temp with ranges and tick
 
 	/*EE*/UART_OPCODE_ERROR = 0xEE,
 

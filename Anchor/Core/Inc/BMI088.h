@@ -29,6 +29,17 @@ extern "C" {
 #define	BMI_INT3_INT4_IO_CONF	0x16
 #define BMI_INT3_INT4_IO_MAP	0x18
 
+/* Ranges set by BMI088_Init, reported with every raw sample */
+#define BMI_ACC_RANGE_3G		0x00	/* +- 3 g: mg = raw * 3000 / 32768 */
+#define BMI_GYR_RANGE_1000DPS	0x01	/* +- 1000 deg/s: dps = raw * 1000 / 32768 */
+
+/* One raw sample, sensor counts */
+typedef struct {
+	int16_t acc[3];
+	int16_t gyr[3];
+	int16_t temp_c8;	/* deg C x 8 */
+} BMI088_Raw;
+
 typedef struct {
 
 	/* SPI */
@@ -86,6 +97,7 @@ uint8_t BMI088_WriteGyrRegister(BMI088 *imu, uint8_t regAddr, uint8_t data);
  */
 uint8_t BMI088_ReadAccelerometer(BMI088 *imu);
 uint8_t BMI088_ReadGyroscope(BMI088 *imu);
+uint8_t BMI088_ReadRaw(BMI088 *imu, BMI088_Raw *out);
 
 /*
  *

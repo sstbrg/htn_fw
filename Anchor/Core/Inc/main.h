@@ -165,9 +165,10 @@ extern "C" {
  * anc3.2.1	issue #5: same-station legacy polls keep the tag's LoRa power/LDE; owner-only fast fallback; station UWB level and LDE preset (opcode 22 bytes 11-12)
  * anc3.3.0	#7 range profiles: opcode 25 SET_PROFILE, owner prepare/commit with the tag, rotation until proof, reverts to profile 0; beacon SF per profile
  * anc3.3.1	Radio watchdog: DW1000 registers checked against the profile in use once a second; mismatch -> full re-init on profile 0 (#7)
+ * anc4.0.0	BMI088 IMU read out: opcode 26 READ_IMU returns one raw acc/gyr/temp sample; IMU INT pins PA1/PA2 are inputs (were outputs driven low against the BMI088 push-pull INT)
  */
 
-#define VERSION "anc3.3.1"
+#define VERSION "anc4.0.0"
 
 
 #define IS_TAG false
