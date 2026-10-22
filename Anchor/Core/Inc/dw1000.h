@@ -398,6 +398,8 @@ bool Link_WantHello(void);
 bool Link_Coexisting(void);
 void Link_IdleTick(void);
 void dwProfileGround(void);			//	range profile 0 now (FOTA)
+void dwRadioWatch(void);			//	main loop: DW1000 registers must match the profile in use
+void dwNoteConfig(void);			//	take channel / PAC tuning as written (after raw writes)
 void Link_BeforePoll(void);
 void Link_FillExtPoll(twr_anchor_ext_msg_t *p);
 bool Link_ItemUwbDue(void);					// put the pending item in the next extended poll (v2)

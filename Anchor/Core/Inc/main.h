@@ -164,9 +164,10 @@ extern "C" {
  * 				slots, extended UWB poll v2 as backup; beacon parse checks GetPayload; bench UWB level pin.
  * anc3.2.1	issue #5: same-station legacy polls keep the tag's LoRa power/LDE; owner-only fast fallback; station UWB level and LDE preset (opcode 22 bytes 11-12)
  * anc3.3.0	#7 range profiles: opcode 25 SET_PROFILE, owner prepare/commit with the tag, rotation until proof, reverts to profile 0; beacon SF per profile
+ * anc3.3.1	Radio watchdog: DW1000 registers checked against the profile in use once a second; mismatch -> full re-init on profile 0 (#7)
  */
 
-#define VERSION "anc3.3.0"
+#define VERSION "anc3.3.1"
 
 
 #define IS_TAG false

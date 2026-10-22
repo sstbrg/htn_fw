@@ -162,6 +162,9 @@ void LPL_EN(uint8_t en)
 	}
 }
 
+// Channel control and PAC tuning as dwConfig() left them.
+static uint32_t dw_chan_ctrl = 0, dw_drx_tune2 = 0;
+
 void dwConfig(dwt_config_t *config) {
 	dwt_txconfig_t tx_config;
 
@@ -209,6 +212,8 @@ void dwConfig(dwt_config_t *config) {
 
 	dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_TXFRS); // to clear flag
 	uwb_tx_level = 0;
+	dw_chan_ctrl = dwt_read32bitreg(CHAN_CTRL_ID);	// for the radio watchdog (dwProfileTick)
+	dw_drx_tune2 = dwt_read32bitoffsetreg(DRX_CONF_ID, DRX_TUNE2_OFFSET);
 }
 
 // TX_POWER register for a level: level 0 = the maximum dwConfig() sets, each level 3 dB lower.
@@ -313,15 +318,19 @@ static uint32_t prof_tick = 0;		// last poll received on prof_cur
 static uint32_t prof_wd_tick = 0;
 uint8_t prof_reason = PROF_R_NONE;	// last revert reason
 
+static void dwProfileFields(uint8_t p) {
+	config.dataRate = prof_tab[p].br;
+	config.txPreambLength = prof_tab[p].plen;
+	config.rxPAC = prof_tab[p].pac;
+	config.sfdTO = prof_tab[p].sfdto;
+}
+
 static void dwUseProfile(uint8_t p) {
 	if (p >= LINK_PROFILES)
 		p = 0;
 	if (p == prof_rx)
 		return;
-	config.dataRate = prof_tab[p].br;
-	config.txPreambLength = prof_tab[p].plen;
-	config.rxPAC = prof_tab[p].pac;
-	config.sfdTO = prof_tab[p].sfdto;
+	dwProfileFields(p);
 	dwt_forcetrxoff();
 	dwConfig(&config);		// antenna delays, LDE, timeouts, TX power: all re-applied
 	prof_rx = p;
@@ -338,13 +347,35 @@ static void dwProfileSet(uint8_t p, uint8_t reason) {
 	Lora_SetBeaconSF(prof_tab[prof_cur].lora_sf);
 }
 
-// FOTA and every reset path: profile 0, now.
-void dwProfileGround(void) {
+// Profile 0 in the state and in config, without touching the radio.
+static void dwProfileGroundState(void) {
 	prof_cur = prof_prev = 0;
 	prof_pend = prof_due = 0xFF;
+	dwProfileFields(0);
+	Lora_SetBeaconSF(prof_tab[0].lora_sf);
+}
+
+// FOTA and every reset path: profile 0, now.
+void dwProfileGround(void) {
+	dwProfileGroundState();
 	prof_rx = 0xFF;			// force the re-apply
 	dwUseProfile(0);
-	Lora_SetBeaconSF(prof_tab[0].lora_sf);
+}
+
+/* Radio watchdog: device id, data rate (TX and RX), preamble length and SFD timeout against the
+ * profile table, channel control and PAC tuning against what dwConfig() left. P1 and P2 share the
+ * 850k rate, so the data rate alone cannot tell them apart. */
+static bool dw_radio_matches(uint8_t p) {
+	if (p >= LINK_PROFILES || dwt_readdevid() != DWT_DEVICE_ID)
+		return false;
+	uint32_t fctrl = dwt_read32bitreg(TX_FCTRL_ID);
+	bool rx110k = (dwt_read32bitreg(SYS_CFG_ID) & SYS_CFG_RXM110K) != 0;
+	return rx110k == (prof_tab[p].br == DWT_BR_110K)
+		&& ((fctrl & TX_FCTRL_TXBR_MASK) >> TX_FCTRL_TXBR_SHFT) == prof_tab[p].br
+		&& (fctrl & TX_FCTRL_TXPSR_PE_MASK) == (((uint32_t)prof_tab[p].plen << TX_FCTRL_TXPRF_SHFT) & TX_FCTRL_TXPSR_PE_MASK)
+		&& dwt_read16bitoffsetreg(DRX_CONF_ID, DRX_SFDTOC_OFFSET) == prof_tab[p].sfdto
+		&& dwt_read32bitreg(CHAN_CTRL_ID) == dw_chan_ctrl
+		&& dwt_read32bitoffsetreg(DRX_CONF_ID, DRX_TUNE2_OFFSET) == dw_drx_tune2;
 }
 
 // Start of every receive window, outside any exchange.
@@ -374,11 +405,16 @@ static void dwProfileTick(void) {
 
 	if (now - prof_wd_tick >= 1000) {	// watchdog: the radio must run prof_rx
 		prof_wd_tick = now;
-		uint32_t sys_cfg = dwt_read32bitreg(SYS_CFG_ID);
-		bool rx110k = (sys_cfg & SYS_CFG_RXM110K) != 0;
-		if (rx110k != (prof_tab[prof_rx].br == DWT_BR_110K)) {
+		if (!dw_radio_matches(prof_rx)) {
+			// a brown-out, a chip reset or a bad SPI write: profile 0 from a full re-initialisation
+			dwProfileGroundState();	// the suspect chip is not written before the reset
 			prof_reason = PROF_R_WATCHDOG;
-			dwProfileGround();
+			if (dwmInit()) {	// on failure no_uwb is set; dwRecover() retries every 5 s with config
+				dwConfig(&config);
+				prof_rx = 0;
+			} else {
+				prof_rx = 0xFF;
+			}
 		}
 	}
 }
