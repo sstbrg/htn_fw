@@ -54,6 +54,12 @@ be any tag or anchor running 3.1.0 or newer. The board you update (the
 4. **Find the target.** Press **Scan for targets**. Every board in UWB range
    answers with its id, type, firmware and battery. Pick the one to update.
    Boards on 3.1.0 don't answer a scan: type their id and press **Connect**.
+   A **sleeping tag** answers neither: type its id first. With a tag release
+   picked and an anchor as loader, **Scan** and **Connect** wake that tag
+   over LoRa before reaching it over UWB (a few seconds; the log shows each
+   wake-up), and **Start update** wakes it again in case it fell back asleep.
+   A woken tag stays awake 15 minutes after the last poll it answered. A tag
+   loader cannot send wake-ups.
 5. **Flash and verify.** Press **Start update** and wait for **Update OK**.
    Then press **Leave FOTA loader mode** so the loader goes back to normal work.
 
@@ -125,14 +131,17 @@ $PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB0 discover          # boards in U
 $PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB0 query 6           # one board's version and CRC
 $PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB0 fota 6 releases/anchor/3.1.4/Anchor.bin
 $PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB0 fota-exit         # leave FOTA loader mode
+$PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB0 wake 19           # wake sleeping tag 19 over LoRa
 $PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB0 flash releases/tag/3.1.3/Tag.bin   # over USB
 $PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB1 led-test          # which LEDs are fitted
 $PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB1 antenna-delay     # per-device UWB antenna delays (3.1.5+)
 $PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB1 antenna-delay --set 16550 16500
 ```
 
-`--port` is the loader (for `fota`, `discover`, `query`) or the board itself
-(for `status`, `flash`). Stable port names are under `/dev/serial/by-id/`.
+`--port` is the loader (for `fota`, `discover`, `query`), the anchor that
+sends the LoRa wake-up (for `wake`), or the board itself (for `status`,
+`flash`). Stable port names are under `/dev/serial/by-id/`. `wake` leaves
+FOTA loader mode first and keeps trying for `--timeout` seconds (default 30).
 `fota` options: `--rate 6m8|850k|110k` (starting rate), `--stay` (keep the
 loader in FOTA mode).
 
@@ -174,9 +183,10 @@ Building by hand: `tools/build.sh Anchor`, `tools/build.sh Tag`,
 | Symptom | What to do |
 |---|---|
 | Port missing, or `error -71` in `journalctl -k` | Replug the USB cable or try another one. |
-| `no STATUS reply` | Board off, asleep, or a bad cable. Tags sleep when idle: wake or power-cycle them. |
+| `no STATUS reply` | Board off, asleep, or a bad cable. Tags sleep when idle: wake them (`htn_fw.py wake <id>` through an anchor) or power-cycle them. |
 | Board stopped answering on USB after a tool was opened at a wrong baud | Power-cycle it. These tools always use 921600; never open the port at another baud. |
-| Scan finds nothing | Target firmware older than 3.1.1, a tag asleep, or out of range. Try typing the id. |
+| Scan finds nothing | Target firmware older than 3.1.1, a tag asleep, or out of range. Type the id: with an anchor loader the tag is woken first. |
+| `tag N not heard after 30 s` | Wrong id, flat battery, or out of LoRa range of the loader. |
 | `link lost` | Move the boards closer, or start at a lower data rate. |
 | `battery too low` | Charge the loader or the target above 30 %. |
 | `wrong device kind` | Anchor firmware picked for a tag or the reverse. |
@@ -207,5 +217,11 @@ built-in default).
 A tag stays awake while it counts down as a target. Minimum versions: FOTA
 target and loader 3.1.0, discovery 3.1.1, battery check on anchors 3.1.2.
 
-LoRa wake-up for sleeping tags is not implemented yet: the wizard skips it, so
-a tag has to be awake (on USB, or ranging) to be updated.
+A sleeping tag is woken with the anchors' normal application opcodes, not FOTA
+ones: 6 `WAKEUP_MODE {tag_id}` makes the anchor send one LoRa wake-up packet
+on the tag's channel, and 5 `SEARCH_TWR {tag_id}` reports whether the tag was
+heard over UWB or LoRa since the previous reply. The sleeping tag's LoRa
+receiver is on about 1 s in 2, so `wake` repeats the packet every 2 s until
+the tag is heard (the same scheme as the htn_rust host, `wakeup.rs`). The
+first `SEARCH_TWR` reply is dropped: it reports everything since the anchor's
+last reply, which can be minutes old.

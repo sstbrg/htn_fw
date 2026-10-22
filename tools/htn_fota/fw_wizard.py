@@ -9,7 +9,7 @@ Steps:
   2. Switch it to FOTA loader mode.
   3. Pick a release (releases/<kind>/<version>/, or a release .zip dropped into releases/)
      or build a new one.
-  4. Reach the target: LoRa wake-up first, then UWB.
+  4. Reach the target: LoRa wake-up first (tags, from an anchor loader), then UWB.
   5. Handshake, transfer, write, verify.
 
 Serial ports are always opened at 921600 (the boards' only baud).
@@ -452,10 +452,13 @@ class Wizard(tk.Tk):
     # ---------------- step 4 ----------------
     def step_target(self):
         r = self.release
+        wake = (" A sleeping tag hears nothing until it is woken over LoRa: type its id below, then Scan or "
+                "Connect (an anchor loader wakes it first; that can take a few seconds)."
+                if r["kind"] == "tag" else "")
         self.clear_body("Find the target",
-                        f"Press Scan: the loader wakes targets over LoRa, then asks every board in UWB range to "
-                        f"report. Pick the {r['kind']} to update. (Boards need 3.1.1+ to answer a scan; for older "
-                        "3.1.0 boards type the id below.)")
+                        f"Press Scan: the loader asks every board in UWB range to report. Pick the {r['kind']} to "
+                        f"update. (Boards need 3.1.1+ to answer a scan; for older 3.1.0 boards type the id below.)"
+                        + wake)
         cols = ("id", "kind", "firmware", "hw", "battery", "crc")
         self.tgt_tree = ttk.Treeview(self.body, columns=cols, show="headings", height=7, selectmode="browse")
         for c, w in zip(cols, (60, 70, 110, 50, 80, 110)):
@@ -479,15 +482,30 @@ class Wizard(tk.Tk):
         self.tinfo.pack(anchor="w", pady=6)
         self.found = {}
 
+    def wake_target(self, ser, tid):
+        """Tag releases: LoRa wake-up of tag `tid` before reaching it over UWB (a sleeping tag answers neither
+        scan nor handshake). Returns at once when the tag is already awake; only an anchor loader can send it."""
+        if self.release["kind"] != "tag":
+            return
+        if self.loader.get("kind") != "anchor":
+            self.log("the loader is a tag: it cannot send LoRa wake-ups, so the target tag must already be awake",
+                     "warn")
+            return
+        self.progress(10, f"LoRa wake-up of tag {tid}...")
+        htn_fw.wake_tag(ser, tid, log=self.log)
+
     def scan_targets(self):
         port = self.loader["port"]
+        tid = self.tid.get().strip()
 
         def job():
-            self.progress(10, "LoRa wake-up...")
-            self.log("LoRa wake-up: not in the firmware yet, skipping (anchors don't sleep; a tag must be awake)",
-                     "warn")
-            self.progress(40, "UWB scan...")
             with serial.Serial(port, htn_fw.BAUD, timeout=0.05) as ser:
+                if tid.isdigit():
+                    self.wake_target(ser, int(tid))
+                elif self.release["kind"] == "tag":
+                    self.log("no tag id typed: sleeping tags will not answer the scan (type the id to wake one)",
+                             "warn")
+                self.progress(40, "UWB scan...")
                 return htn_fw.fota_discover(ser)
 
         def done(found):
@@ -526,8 +544,9 @@ class Wizard(tk.Tk):
         want_kind = self.release["kind"]
 
         def job():
-            self.progress(40, f"UWB handshake with {tid}...")
             with serial.Serial(port, htn_fw.BAUD, timeout=0.05) as ser:
+                self.wake_target(ser, tid)
+                self.progress(40, f"UWB handshake with {tid}...")
                 for attempt in range(3):
                     s = htn_fw.fota_query(ser, tid)
                     if s:
@@ -588,6 +607,7 @@ class Wizard(tk.Tk):
         def job():
             t0 = time.monotonic()
             with serial.Serial(port, htn_fw.BAUD, timeout=0.05) as ser:
+                self.wake_target(ser, tid)     # it may have gone back to sleep since Connect (15 min)
                 self.log(f"loading {len(img)} B into the loader's RAM...")
                 htn_fw.fota_load(ser, img, tid, kind, rate,
                                  progress=lambda d, t: self.progress(20 * d / t, f"loading into loader: {d}/{t} B"))
