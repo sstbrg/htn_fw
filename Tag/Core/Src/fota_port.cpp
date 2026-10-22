@@ -53,8 +53,7 @@ extern "C" int fota_port_led_set(uint8_t idx, int on)
 
 extern "C" void fota_port_uwb_restore(void)
 {
-	dwt_forcetrxoff();
-	dwConfig(&config);
+	dwProfileGround();	// profile 0 (#7): also resets the profile state, not only the radio
 }
 
 extern "C" void fota_port_uart_send(void *buf, uint32_t len)

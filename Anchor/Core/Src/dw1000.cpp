@@ -189,6 +189,7 @@ void dwConfig(dwt_config_t *config) {
 }
 
 void dwScanMode(void) {
+	Link_IdleTick();
 	dwt_rxenable(DWT_START_RX_IMMEDIATE);
 	status_reg = dwt_read32bitreg(SYS_STATUS_ID);
 	uint32_t SavedTimer = _1ms_tick;
@@ -614,6 +615,8 @@ static void link_reset(void) {
 	link_st.uwb_good = link_st.uwb_miss = link_st.uwb_mismatch = 0;
 	link_st.uwb_floor = LINK_UWB_LEVELS - 1;
 	link_st.station_hold = 0;
+	link_st.prof_cur = link_st.prof_target = 0;	// the radio follows before the next poll
+	link_st.prof_phase = PROF_P_IDLE;
 	link_st.lora_phase = LINK_LP_IDLE;
 	link_st.lora_cur = link_st.lora_req = LINK_LORA_MAX_DBM;
 	link_st.lora_tries = link_st.lora_good = 0;
@@ -669,6 +672,9 @@ void Link_Init(void) {
 	link_st.last_rx_dbm = -200.0f;	// unknown: no repeats until a strong exchange
 	link_st.k_used = 1;
 	link_st.coexist_tick = HAL_GetTick() - LINK_MULTI_MS;
+	link_st.prof_rx = 0;	// dwConfig() at boot runs profile 0
+	link_st.prof_seq = 0;
+	link_st.prof_reason = PROF_R_NONE;
 }
 
 // Extended frames carry the tag's TX power (9D) and LDE preset (9G).
@@ -682,7 +688,16 @@ bool Link_WantHello(void) {
 	return link_wants_ext() && !link_st.ext_hold;
 }
 
+static void link_before_poll(void);
+static void link_profile_tick(void);
+static void link_profile_after(bool answered);
+
 void Link_BeforePoll(void) {
+	link_before_poll();
+	link_profile_tick();	// the configuration this poll goes out on
+}
+
+static void link_before_poll(void) {
 	uint32_t now = HAL_GetTick();
 	if (dwmInfo.tag_dest != link_st.ext_tag) {	// state belongs to one tag
 		link_reset();
@@ -862,6 +877,191 @@ void Link_OnResponse(const twr_tag_ext_msg_t *r, bool ext_poll, bool ext_resp, b
 	}
 }
 
+/* ---------------- range profiles (#7, main.h LINK_PROFILES) ----------------
+ * The host sends the same {seq, profile} to every anchor of a station (opcode 25). The LoRa owner
+ * tells the tag (prepare, then commit, over the configuration channel); the tag switches after
+ * answering the commit. Every anchor then finds the tag the same way: polls stay on the profile in
+ * force until they miss, then alternate between the new and the old profile until a reply decides.
+ * No reply at all for PROF_ROTATE_MS -> profile 0, which the tag reaches on its own within 1 s.
+ * Two stations, a tag change, silence and FOTA put the anchor on profile 0 at once. */
+static const struct { uint8_t br; uint16_t plen, pac, sfdto; uint8_t lora_sf; } prof_tab[LINK_PROFILES] = {
+	{ DWT_BR_110K, DWT_PLEN_2048, DWT_PAC64, 2048 + 1 + 64 - 64, 0x0C },	// 0 far (ground): SF12
+	{ DWT_BR_850K, DWT_PLEN_1024, DWT_PAC32, 1024 + 1 + 16 - 32, 0x0A },	// 1 mid: SF10
+	{ DWT_BR_850K, DWT_PLEN_512,  DWT_PAC16, 512 + 1 + 16 - 16,  0x08 },	// 2 near: SF8
+};
+
+static void link_use_profile(uint8_t p) {
+	if (p >= LINK_PROFILES)
+		p = 0;
+	if (p == link_st.prof_rx)
+		return;
+	config.dataRate = prof_tab[p].br;
+	config.txPreambLength = prof_tab[p].plen;
+	config.rxPAC = prof_tab[p].pac;
+	config.sfdTO = prof_tab[p].sfdto;
+	dwt_forcetrxoff();
+	dwConfig(&config);		// antenna delays, LDE preset, timeouts: all re-applied
+	link_st.prof_rx = p;
+}
+
+uint8_t Link_ProfileSF(void) {
+	return prof_tab[link_st.prof_cur < LINK_PROFILES ? link_st.prof_cur : 0].lora_sf;
+}
+
+static void link_profile_settle(uint8_t p, uint8_t reason) {
+	if (p != link_st.prof_cur && reason != PROF_R_HOST)
+		link_st.prof_reason = reason;
+	link_st.prof_cur = p;
+	link_st.prof_phase = PROF_P_IDLE;
+	link_use_profile(p);
+	Lora_SetBeaconSF(Link_ProfileSF());
+}
+
+void Link_ProfileGround(uint8_t reason) {
+	bool was = link_st.prof_cur != 0 || link_st.prof_phase != PROF_P_IDLE;
+	link_st.prof_target = 0;
+	link_profile_settle(0, reason);
+	if (was && reason != PROF_R_NONE)
+		link_st.prof_reason = reason;
+}
+
+// FOTA and other full re-initialisations: profile 0 in state and radio, now.
+void dwProfileGround(void) {
+	Link_ProfileGround(PROF_R_FOTA);
+	link_st.prof_rx = 0xFF;
+	link_use_profile(0);
+}
+
+// Main loop, between exchanges (dwScanMode): with the tag gone quiet, the radio goes back to
+// profile 0 even when the host has stopped polling, so backoff listening runs on profile 0.
+void Link_IdleTick(void) {
+	if (link_st.prof_rx != 0 && HAL_GetTick() - link_st.last_uwb_tick > LINK_UWB_LOST_MS) {
+		Link_ProfileGround(PROF_R_SILENCE);
+		link_use_profile(0);
+	}
+}
+
+static bool link_profile_allowed(void) {
+	return (link_cfg.features & LINK_F_PROFILE) && link_st.ext && link_st.tag_ver >= 3 && !Link_Coexisting();
+}
+
+bool Link_ProfileRequest(uint8_t seq, uint8_t profile) {
+	if (seq == link_st.prof_seq && seq != 0)
+		return true;		// a repeat of the request in progress
+	link_st.prof_seq = seq;
+	if (profile >= LINK_PROFILES)
+		return false;
+	if (profile == 0) {		// toward the ground state: no negotiation needed
+		if (link_cfg.lora_owner && link_st.prof_cur != 0)
+			Link_ItemQueue(dwmInfo.tag_dest, LITEM_PROFILE_COMMIT, 0);
+		Link_ProfileGround(PROF_R_HOST);
+		return true;
+	}
+	if (!link_profile_allowed()) {
+		link_st.prof_reason = PROF_R_UNSUPPORTED;
+		return false;
+	}
+	link_st.prof_target = profile;
+	if (profile == link_st.prof_cur)
+		return true;
+	link_st.prof_t0 = HAL_GetTick();
+	if (link_cfg.lora_owner) {
+		Link_ItemQueue(dwmInfo.tag_dest, LITEM_PROFILE_PREP, profile);
+		link_st.prof_phase = PROF_P_PREP;
+	} else {
+		link_st.prof_phase = PROF_P_ARMED;
+	}
+	return true;
+}
+
+static void link_profile_rotate(uint8_t target, uint8_t partner) {
+	link_st.prof_target = target;
+	link_st.prof_prev = partner;
+	link_st.prof_phase = PROF_P_ROTATE;
+	link_st.prof_rot = 0;	// toggled before each poll: the first one goes out on the new profile
+	link_st.prof_t0 = HAL_GetTick();
+}
+
+// Before every poll: phase progress, then the configuration this poll goes out on.
+static void link_profile_tick(void) {
+	uint32_t now = HAL_GetTick();
+	if ((link_st.prof_cur != 0 || link_st.prof_phase != PROF_P_IDLE) && Link_Coexisting()) {
+		Link_ProfileGround(PROF_R_MULTI);
+		return;
+	}
+	switch (link_st.prof_phase) {
+	case PROF_P_PREP:
+		if (link_item.item == LITEM_PROFILE_PREP && link_item.state == LITEM_DONE) {
+			if (!(link_item.flags & LACK_F_REJECTED) && link_item.readback == link_st.prof_target) {
+				Link_ItemQueue(dwmInfo.tag_dest, LITEM_PROFILE_COMMIT, link_st.prof_target);
+				link_st.prof_phase = PROF_P_COMMIT;
+			} else {
+				link_st.prof_phase = PROF_P_IDLE;
+				link_st.prof_reason = PROF_R_NO_PROOF;
+			}
+		} else if (link_item.state == LITEM_FAILED) {
+			link_st.prof_phase = PROF_P_IDLE;
+			link_st.prof_reason = PROF_R_NO_PROOF;
+		}
+		break;
+	case PROF_P_COMMIT:
+		if (link_item.item == LITEM_PROFILE_COMMIT && link_item.state == LITEM_DONE) {
+			if (link_item.flags & LACK_F_REJECTED) {
+				link_st.prof_phase = PROF_P_IDLE;
+				link_st.prof_reason = PROF_R_NO_PROOF;
+			} else {
+				link_profile_rotate(link_st.prof_target, link_st.prof_cur);	// the tag switches now
+			}
+		} else if (link_item.state == LITEM_FAILED) {
+			link_st.prof_phase = PROF_P_IDLE;
+			link_st.prof_reason = PROF_R_NO_PROOF;
+		}
+		break;
+	case PROF_P_ARMED:
+		if (now - link_st.prof_t0 > PROF_ARMED_MS) {
+			link_st.prof_phase = PROF_P_IDLE;
+			link_st.prof_reason = PROF_R_NO_PROOF;
+		}
+		break;
+	case PROF_P_ROTATE:
+		if (now - link_st.prof_t0 > PROF_ROTATE_MS) {	// nobody answers on either: ground state
+			if (link_cfg.lora_owner)
+				Link_ItemQueue(dwmInfo.tag_dest, LITEM_PROFILE_COMMIT, 0);
+			Link_ProfileGround(PROF_R_MISSES);
+			return;
+		}
+		link_st.prof_rot ^= 1;
+		link_use_profile(link_st.prof_rot ? link_st.prof_target : link_st.prof_prev);
+		return;
+	default:
+		break;
+	}
+	link_use_profile(link_st.prof_cur);
+}
+
+// After every poll that was answered or missed (first exchange of a round).
+static void link_profile_after(bool answered) {
+	if (link_st.prof_phase == PROF_P_ROTATE) {
+		if (answered) {
+			uint8_t p = link_st.prof_rx;
+			link_profile_settle(p, p == link_st.prof_target ? PROF_R_HOST : PROF_R_NO_PROOF);
+			if (p != link_st.prof_target && !link_cfg.lora_owner) {	// the tag has not switched yet
+				link_st.prof_phase = PROF_P_ARMED;
+			}
+		}
+		return;
+	}
+	if (answered)
+		return;
+	// missed: an armed anchor, or a switched one that lost the tag, starts looking on both
+	if (link_st.uwb_miss >= 2) {
+		if (link_st.prof_phase == PROF_P_ARMED)
+			link_profile_rotate(link_st.prof_target, link_st.prof_cur);
+		else if (link_st.prof_cur != 0)
+			link_profile_rotate(link_st.prof_cur, link_st.prof_prev);
+	}
+}
+
 /* ---------------- configuration items (opcode 24, main.h LCMD_* / LITEM_*) ----------------
  * One item for one tag at a time. LoRa first: after a beacon on a slot the tag listens to, the
  * command goes out with inverted IQ and the tag acks right away. Once LoRa has not answered for
@@ -949,8 +1149,9 @@ void Link_ItemFillPoll(twr_anchor_ext2_msg_t *p) {
 
 void Link_ItemOnUwb(const twr_tag_ext2_msg_t *r) {
 	if (link_item.state == LITEM_PENDING && r->item == link_item.item && r->item_seq == link_item.seq
-			&& !(r->item_flags & LACK_F_APPLYING))
-		link_item_done(r->item_value, r->item_flags, LITEM_VIA_UWB);
+			&& (!(r->item_flags & LACK_F_APPLYING) || r->item == LITEM_PROFILE_COMMIT))
+		link_item_done(r->item == LITEM_PROFILE_COMMIT ? link_item.value : r->item_value,
+				r->item_flags & ~LACK_F_APPLYING, LITEM_VIA_UWB);	// a commit is applied after this answer
 }
 
 // rx_power_dbm and first-path power, DW1000 UM 4.7.1/4.7.2 (PRF 64 MHz); N without the SFD
@@ -1022,6 +1223,10 @@ void Link_OnExchange(uint8_t result, bool first, bool ext_poll, bool ext_resp) {
 	if (result == EX_NONE) {
 		if (!first)		// a repeat that goes unanswered (tag still re-arming) proves nothing
 			return;
+		if (link_st.prof_phase == PROF_P_ROTATE) {	// half of a rotation misses by design: its own deadline decides
+			link_profile_after(false);
+			return;
+		}
 		// extended polls go unanswered: legacy frames. Only the LoRa owner falls back quickly; for
 		// the others a miss costs their own exchange, not the station's link state (issue #5). A
 		// bench level pin rides out a weak level.
@@ -1043,9 +1248,12 @@ void Link_OnExchange(uint8_t result, bool first, bool ext_poll, bool ext_resp) {
 			else if (link_st.uwb_prev < link_st.uwb_level)
 				link_st.uwb_level = link_st.uwb_prev;	// undo the last quieter step
 		}
+		link_profile_after(false);
 		return;
 	}
 	link_st.uwb_miss = 0;
+	if (first)
+		link_profile_after(true);
 	if (result != EX_VALID || !ext_resp || link_st.reverting || !(link_cfg.features & LINK_F_POWER))
 		return;
 	if (link_st.echo_uwb_level != link_st.uwb_level)

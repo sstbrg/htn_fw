@@ -245,7 +245,8 @@ static void Tag_Config_Command(S_UART_MESSAGE *msg) {
 		uint16_t tag, value;
 		memcpy(&tag, &msg->buff[0], 2);
 		memcpy(&value, &msg->buff[3], 2);
-		Link_ItemQueue(tag, msg->buff[2], value);
+		if (link_st.prof_phase != PROF_P_PREP && link_st.prof_phase != PROF_P_COMMIT)	// the profile switch owns the item slot
+			Link_ItemQueue(tag, msg->buff[2], value);
 	}
 	r[0] = msg->header.opcode;
 	r[1] = sizeof(r);
@@ -257,6 +258,29 @@ static void Tag_Config_Command(S_UART_MESSAGE *msg) {
 	r[9] = link_item.via;
 	r[10] = link_item.tag_listen_n;
 	r[11] = link_item.lora_tries;
+	r[sizeof(r) - 1] = checksum(r, sizeof(r));
+	UART_SendMessage(r, sizeof(r));
+}
+
+// UART_OPCODE_SET_PROFILE (#7): {seq u8, profile u8} - the host sends the same to every anchor of the
+// station; a repeated seq is ignored; empty = status. Reply {ok, seq, target, cur, phase, reason,
+// tag echo, tag link version, radio profile now}.
+static void Set_Profile_Command(S_UART_MESSAGE *msg) {
+	static uint8_t r[2 + 9 + 1];
+	uint8_t ok = 1;
+	if (msg->header.length >= sizeof(S_HEADER) + 2 + 1)
+		ok = Link_ProfileRequest(msg->buff[0], msg->buff[1]);
+	r[0] = msg->header.opcode;
+	r[1] = sizeof(r);
+	r[2] = ok;
+	r[3] = link_st.prof_seq;
+	r[4] = link_st.prof_target;
+	r[5] = link_st.prof_cur;
+	r[6] = link_st.prof_phase;
+	r[7] = link_st.prof_reason;
+	r[8] = link_st.ext ? link_st.echo_profile : 0xFF;
+	r[9] = link_st.tag_ver;
+	r[10] = link_st.prof_rx;
 	r[sizeof(r) - 1] = checksum(r, sizeof(r));
 	UART_SendMessage(r, sizeof(r));
 }
@@ -508,6 +532,10 @@ int main(void)
   				Tag_Config_Command(&msg);
   				break;
   			}
+  			case UART_OPCODE_SET_PROFILE: {
+  				Set_Profile_Command(&msg);
+  				break;
+  			}
   			case UART_OPCODE_READ_CIR_WINDOW: {
   				Cir_Window_Command(&msg);
   				break;
@@ -542,6 +570,8 @@ int main(void)
 
   			case UART_OPCODE_BIT_CONTROL:{
   				dwmInfo.tag_imposter = msg.op_bit_req.tag_imposter;
+  				if (dwmInfo.tag_imposter)
+  					Link_ProfileGround(PROF_R_HOST);	// an imposter answers on profile 0
   				if (!lora_rxInfo.no_lora && (lora_rxInfo.freq != RF_FREQ_TAG(lora_rxInfo.self_id))) {
   					Update_Lora_Config_Imposter(&lora_rxInfo);
   				}

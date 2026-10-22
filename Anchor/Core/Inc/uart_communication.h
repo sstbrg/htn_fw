@@ -47,6 +47,7 @@ extern "C"
 #define LINK_STATE_COEXIST	0x10	// two stations or backoff armed: adaptation frozen (9K)
 #define LINK_STATE_TAG_NLOS	0x20	// the tag reports its NLOS LDE preset (9G)
 #define LINK_STATE_HOLD_MAX	0x40	// station UWB level held at maximum after misses
+#define LINK_STATE_SWITCHING 0x80	// a profile switch is in flight (#7)
 
 #pragma pack (1)
 typedef struct
@@ -174,6 +175,8 @@ typedef struct
 	uint8_t			tag_uwb_tx_level;	//	LINK_UWB_UNKNOWN = unknown
 	uint8_t			lde_preset;			//	0 = LOS (lde_cfg1), 1 = NLOS preset (9G)
 	uint8_t			k_used;				//	last round's exchanges (9F)
+	uint8_t			profile_cur;		//	#7: profile in force at this anchor
+	uint8_t			profile_reason;		//	#7: last revert / refusal (PROF_R_*)
 
 	uint8_t 		checksum;
 } S_UART_STATUS_REPLY;
@@ -435,6 +438,7 @@ typedef enum
 	/*19*/UART_OPCODE_BACKOFF_CTRL = 19,	// control of dwScanMode. enable or disable; optional {top_ms, min_ms}
 	/*20*/UART_OPCODE_ANT_DELAY = 20,		// per-device antenna delays {tx, rx} in flash; empty = read
 	/*21*/UART_OPCODE_READ_CIR_WINDOW = 21,	// CIR window latched with the last valid range
+	/*25*/UART_OPCODE_SET_PROFILE = 25,		// #7: {seq, profile} to every anchor of the station; empty = status
 	/*24*/UART_OPCODE_TAG_CONFIG = 24,		// configuration item to the tag over LoRa, UWB as backup; empty = status
 	/*23*/UART_OPCODE_XTAL_TRIM = 23,		// DW1000 crystal trim {trim 0..31, 0xFF = clear} in flash; empty = read
 	/*22*/UART_OPCODE_SET_LINK_FEATURES = 22,	// LinkCfg_t (doc 9I), a shorter payload sets the leading fields; empty = read

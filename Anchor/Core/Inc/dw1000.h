@@ -136,7 +136,7 @@ typedef struct {			// extended response: legacy bytes 0-17, then the tag's state
 
 /* Extended frames v2 (tag3.2.1 and later; the hello answer's bits 5..1 carry the version): v1 plus
  * one configuration item (LITEM_*, main.h), the backup path for what normally goes over LoRa. */
-#define LINK_VERSION        2
+#define LINK_VERSION        3       // 2: extended frames v2 (tag3.2.1); 3: range profiles (#7)
 #define LINK_VER_OF(b)      (((b) >> 1) & 0x1F)
 
 #pragma pack(push, 1)
@@ -396,6 +396,8 @@ int dwRangeRound(uint8_t k_req);		//	SEARCH_TWR: 1..K exchanges (9F), shortest v
 uint8_t dwLdeCfg1(void);			//	LDE_CFG1 in force: lde_cfg1 or the 9G NLOS preset
 bool Link_WantHello(void);
 bool Link_Coexisting(void);
+void Link_IdleTick(void);
+void dwProfileGround(void);			//	range profile 0 now (FOTA)
 void Link_BeforePoll(void);
 void Link_FillExtPoll(twr_anchor_ext_msg_t *p);
 bool Link_ItemUwbDue(void);					// put the pending item in the next extended poll (v2)

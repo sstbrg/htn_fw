@@ -85,6 +85,7 @@ static uint32_t lora_rx_tick = 0;
  * Right after a beacon on one of the tag's listen slots: the command (inverted IQ), then a short
  * window for the tag's ack (inverted IQ), then back to beacons. Normal-IQ receivers never see either. */
 static void Lora_Recover(void);
+static void lora_apply_sf(uint8_t sf);
 typedef enum { CS_NORMAL, CS_CMD_TX, CS_ACK_RX } CmdState_t;
 static CmdState_t cmd_state = CS_NORMAL;
 static uint32_t cmd_t0 = 0;
@@ -92,6 +93,8 @@ static uint32_t cmd_t0 = 0;
 
 // SX1262 datasheet 15.4: register 0x0736 bit 2 = 0 with inverted IQ, 1 with normal IQ.
 static void lora_cmd_mode(bool on) {
+	if (on)
+		lora_apply_sf(LORA_SPREADING_FACTOR);	// commands and acks: SF12 (beacon SF comes back on the next RX arm)
 	PacketParams_t pp = radioConfiguration.packetParams;
 	pp.Params.LoRa.InvertIQ = on ? LORA_IQ_INVERTED : LORA_IQ;
 	pp.Params.LoRa.CrcMode = on ? LORA_CRC_ON : LORA_CRC_MODE;
@@ -172,6 +175,24 @@ static void Lora_Recover(void) {
 
 RadioStatus_t status;
 
+/* #7: beacons arrive at the profile's SF; commands, acks and wake-ups are always SF12 (the
+ * configured LORA_SPREADING_FACTOR). applied_sf is what the radio runs now. */
+static uint8_t rx_sf = LORA_SPREADING_FACTOR;
+static uint8_t applied_sf = LORA_SPREADING_FACTOR;
+
+static void lora_apply_sf(uint8_t sf) {
+	if (sf == applied_sf)
+		return;
+	ModulationParams_t mp = radioConfiguration.modParams;
+	mp.Params.LoRa.SpreadingFactor = (RadioLoRaSpreadingFactors_t)sf;
+	Radio.SetModulationParams(&mp);
+	applied_sf = sf;
+}
+
+void Lora_SetBeaconSF(uint8_t sf) {
+	rx_sf = sf;		// applied when reception is next armed (at most one RX timeout later)
+}
+
 void Lora_Operation_RX(){
 	HAL_GPIO_WritePin(SX_LED_TX_GPIO_Port, SX_LED_TX_Pin, GPIO_PIN_RESET);
 	sLoRaMsg* p_lora_msg;
@@ -216,6 +237,7 @@ void Lora_Operation_RX(){
 		Lora_SendCommand();
 		return;
 	}
+	lora_apply_sf(rx_sf);
 	ConfigureRadioRx(&Radio, &radioConfiguration);
 	Radio.ClearIrqStatus(0xFFFF);
 	lora_rx_tick = HAL_GetTick();
@@ -237,6 +259,7 @@ void Lora_Operation_TX( void )
 	MessageToSend.checksum = checksum((uint8_t*)&MessageToSend, sizeof(MessageToSend)-1);// crc not including crc itself
 
 	PrepareBuffer(&Radio, &MessageToSend);
+	lora_apply_sf(LORA_SPREADING_FACTOR);	// wake-ups always SF12
 	ConfigureRadioTx(&Radio, &radioConfiguration);
 	lora_tx_tick = HAL_GetTick();
 	Radio.SetTx(radioConfiguration.txTimeout);
@@ -270,6 +293,7 @@ void TAG_Lora_Operation_TX(status_bits errors) {
 
 
 	TAG_PrepareBuffer(&Radio, &messageToSend);
+	lora_apply_sf(LORA_SPREADING_FACTOR);	// imposter beacons: profile 0
 	ConfigureRadioTx(&Radio, &radioConfiguration);
 	lora_tx_tick = HAL_GetTick();
 	Radio.SetTx(radioConfiguration.txTimeout);
@@ -354,6 +378,7 @@ void ChangeConfigurations(RadioConfigurations_t *config, RadioLoRaBandwidths_t b
     config->modParams.Params.LoRa.SpreadingFactor = sf;
 }
 void ConfigureGeneralRadio(SX126xHal *radio, RadioConfigurations_t *config){
+    applied_sf = config->modParams.Params.LoRa.SpreadingFactor;	// SetModulationParams below
     radio->SetPacketType(config->packetType);
     radio->SetPacketParams(&config->packetParams);
     radio->SetModulationParams(&config->modParams);
