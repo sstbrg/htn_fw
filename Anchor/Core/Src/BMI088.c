@@ -55,7 +55,7 @@ uint8_t BMI088_Init(BMI088 *imu,
 	status += BMI088_WriteAccRegister(imu, BMI_ACC_CONF, 0xA8); /* (no oversampling, ODR = 100 Hz, BW = 40 Hz) */
 	HAL_Delay(10);
 
-	status += BMI088_WriteAccRegister(imu, BMI_ACC_RANGE, 0x00); /* +- 3g range */
+	status += BMI088_WriteAccRegister(imu, BMI_ACC_RANGE, BMI_ACC_RANGE_3G); /* +- 3g range */
 	HAL_Delay(10);
 
 	/* Enable accelerometer data ready interrupt */
@@ -103,7 +103,7 @@ uint8_t BMI088_Init(BMI088 *imu,
 	HAL_Delay(10);
 
 	/* Configure gyroscope */
-	status += BMI088_WriteGyrRegister(imu, BMI_GYR_RANGE, 0x01); /* +- 1000 deg/s */
+	status += BMI088_WriteGyrRegister(imu, BMI_GYR_RANGE, BMI_GYR_RANGE_1000DPS); /* +- 1000 deg/s */
 	HAL_Delay(10);
 
 	status += BMI088_WriteGyrRegister(imu, BMI_GYR_BANDWIDTH, 0x07); /* ODR = 100 Hz, Filter bandwidth = 32 Hz */
@@ -275,6 +275,45 @@ uint8_t BMI088_ReadGyroscope(BMI088 *imu) {
 	imu->gyr_rps[0] = imu->gyrConversion * gyrX;
 	imu->gyr_rps[1] = imu->gyrConversion * gyrY;
 	imu->gyr_rps[2] = imu->gyrConversion * gyrZ;
+
+	return status;
+
+}
+
+/* One burst read without the ms settling delays of CS_*_On/Off (CSB timing is in ns), so a
+ * UART request costs tens of us; short timeout so a stuck SPI cannot hang the main loop. */
+static uint8_t Burst(BMI088 *imu, GPIO_TypeDef *csBank, uint16_t csPin, uint8_t *txBuf, uint8_t *rxBuf, uint16_t n) {
+
+	HAL_GPIO_WritePin(csBank, csPin, GPIO_PIN_RESET);
+	uint8_t status = (HAL_SPI_TransmitReceive(imu->spiHandle, txBuf, rxBuf, n, 5) == HAL_OK);
+	HAL_GPIO_WritePin(csBank, csPin, GPIO_PIN_SET);
+
+	return status;
+
+}
+
+/* Accelerometer, gyroscope and temperature as raw counts; returns 1 when all three reads succeed */
+uint8_t BMI088_ReadRaw(BMI088 *imu, BMI088_Raw *out) {
+
+	uint8_t accTx[8] = {BMI_ACC_DATA | 0x80};	/* addr, dummy, 6 data bytes */
+	uint8_t gyrTx[7] = {BMI_GYR_DATA | 0x80};	/* addr, 6 data bytes */
+	uint8_t tmpTx[4] = {BMI_TEMP_DATA | 0x80};	/* addr, dummy, MSB, LSB */
+	uint8_t accRx[8], gyrRx[7], tmpRx[4];
+
+	uint8_t status = Burst(imu, imu->csAccPinBank, imu->csAccPin, accTx, accRx, 8)
+				   & Burst(imu, imu->csGyrPinBank, imu->csGyrPin, gyrTx, gyrRx, 7)
+				   & Burst(imu, imu->csAccPinBank, imu->csAccPin, tmpTx, tmpRx, 4);
+
+	for (int i = 0; i < 3; i++) {
+		out->acc[i] = (int16_t) ((accRx[3 + 2 * i] << 8) | accRx[2 + 2 * i]);
+		out->gyr[i] = (int16_t) ((gyrRx[2 + 2 * i] << 8) | gyrRx[1 + 2 * i]);
+	}
+
+	/* 11-bit two's complement, 0.125 deg C per LSB, 0 = 23 deg C (datasheet 5.3.7) */
+	int16_t t = (int16_t) ((tmpRx[2] << 3) | (tmpRx[3] >> 5));
+	if (t > 1023)
+		t -= 2048;
+	out->temp_c8 = t + 23 * 8;
 
 	return status;
 

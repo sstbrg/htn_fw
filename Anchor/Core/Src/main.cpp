@@ -188,6 +188,30 @@ static void Cir_Window_Command(S_UART_MESSAGE *msg) {
 	UART_SendMessage(r, len);
 }
 
+// UART_OPCODE_READ_IMU: empty request. Reply {status (bit0 no IMU, bit1 SPI error; data zero when set),
+// tick_ms u32, acc xyz i16, gyr xyz i16 (raw counts), temp i16 (deg C x 8), acc_range u8, gyr_range u8}.
+static void Imu_Command(S_UART_MESSAGE *msg) {
+	static uint8_t r[24];
+	BMI088_Raw s = {0};
+	uint8_t status = bmi.no_IMU ? 0x01 : 0x00;
+	uint32_t tick = HAL_GetTick();
+	if (!status && !BMI088_ReadRaw(&bmi, &s)) {
+		memset(&s, 0, sizeof(s));
+		status = 0x02;
+	}
+	r[0] = msg->header.opcode;
+	r[1] = sizeof(r);
+	r[2] = status;
+	memcpy(&r[3], &tick, 4);
+	memcpy(&r[7], s.acc, 6);
+	memcpy(&r[13], s.gyr, 6);
+	memcpy(&r[19], &s.temp_c8, 2);
+	r[21] = BMI_ACC_RANGE_3G;
+	r[22] = BMI_GYR_RANGE_1000DPS;
+	r[23] = checksum(r, sizeof(r));
+	UART_SendMessage(r, sizeof(r));
+}
+
 // UART_OPCODE_SET_LINK_FEATURES (doc 9I): LinkCfg_t bytes {features, k_max, lora_target_dbm,
 // lora_band_db, uwb_target_dbm, uwb_band_db, profile_max, profile_override, step_interval_ds,
 // lora_owner, uwb_level_pin}; a shorter payload sets the leading fields, empty = read. Reply: the configuration.
@@ -544,6 +568,10 @@ int main(void)
   			}
   			case UART_OPCODE_SET_LINK_FEATURES: {
   				Link_Features_Command(&msg);
+  				break;
+  			}
+  			case UART_OPCODE_READ_IMU: {
+  				Imu_Command(&msg);
   				break;
   			}
   			case UART_OPCODE_LOOPBACK: {
