@@ -10,6 +10,7 @@ baud can leave a board's UART deaf until power-cycled).
   htn_fw.py --port /dev/ttyUSB0 discover                         # list FOTA targets in UWB range
   htn_fw.py --port /dev/ttyUSB0 query 6                          # ask target 6 for its version/CRC
   htn_fw.py --port /dev/ttyUSB0 fota-exit                        # leave FOTA flasher mode
+  htn_fw.py --port /dev/ttyUSB0 wake 19                          # LoRa wake-up of sleeping tag 19 (anchor on --port)
 
 UART frame: [opcode, length, payload..., checksum], length = whole frame,
 checksum = sum(frame[:-1]) & 0xFF.
@@ -17,10 +18,12 @@ checksum = sum(frame[:-1]) & 0xFF.
 Bootloader (bootloader_hitan): 11 STATUS, 16 START_PROG (erase bank 2),
 17 WRITE_BUFFER (128 B), 18 HEADER_FILE (crc, len), 10 RESET.
 Apps: 11 STATUS, 15 UPDATE_FW (jump to bootloader), 0x40-0x47 FOTA (fota.h).
+Anchors: 5 SEARCH_TWR {tag_id}, 6 WAKEUP_MODE {tag_id} (one LoRa wake-up packet).
 Image CRC: STM32 CRC-32 (poly 0x04C11DB7, init 0xFFFFFFFF, no reflection),
 byte-fed, over the image padded with 0xFF to 255 pages (0x1FE000 bytes).
 """
 import argparse
+import re
 import struct
 import sys
 import time
@@ -28,6 +31,7 @@ import time
 import serial
 
 BAUD = 921600
+OP_SEARCH_TWR, OP_WAKEUP = 5, 6
 OP_RESET, OP_STATUS, OP_UPDATE_FW = 10, 11, 15
 OP_START_PROG, OP_WRITE_BUFFER, OP_HEADER_FILE, OP_ERROR = 16, 17, 18, 0xEE
 OP_FOTA_ENTER, OP_FOTA_LOAD_BEGIN, OP_FOTA_LOAD_DATA, OP_FOTA_START = 0x40, 0x41, 0x42, 0x43
@@ -70,20 +74,20 @@ def image_crc(img):
     return crc32_mpeg2(img + b"\xFF" * (CRC_LEN - len(img)))
 
 
+# Version string compiled into the image: anc<major>.x.y / tag<major>.x.y, legacy sC3.x / sNC3.x
+VERSION_RE = re.compile(rb"(anc|tag|sNC|sC)\d+\.\d+\.\d+\0")
+VERSION_KIND = {b"anc": 0, b"sC": 0, b"tag": 1, b"sNC": 1}
+
+
 def image_kind(img):
     """0 = anchor, 1 = tag, from the version string compiled into the image."""
-    for marker, kind in ((b"anc3.", 0), (b"tag3.", 1), (b"sNC3.", 1), (b"sC3.", 0)):
-        if marker in img:
-            return kind
-    return None
+    m = VERSION_RE.search(img)
+    return VERSION_KIND[m.group(1)] if m else None
 
 
 def image_version(img):
-    for marker in (b"anc3.", b"tag3.", b"sNC3.", b"sC3."):
-        i = img.find(marker)
-        if i >= 0:
-            return img[i:i + 9].split(b"\0")[0].decode(errors="replace")
-    return "?"
+    m = VERSION_RE.search(img)
+    return m.group(0)[:-1].decode() if m else "?"
 
 
 def check_image(img):
@@ -320,6 +324,54 @@ def fota_discover(ser, timeout=6):
             return found
 
 
+WAKE_RETRY = 2.0       # s between LoRa wake-ups: the sleeping tag's LoRa receiver is on ~1 s in 2
+WAKE_POLL = 0.3        # s between SEARCH_TWR polls that check whether the tag is heard
+
+
+def tag_heard(ser, tag_id):
+    """One SEARCH_TWR to `tag_id`; True when the reply reports it heard over UWB or LoRa.
+    The anchor answers with the latest exchange and polls the tag again."""
+    r = xfer(ser, OP_SEARCH_TWR, struct.pack("<H", tag_id), timeout=0.4)
+    if not r or r[0] != OP_SEARCH_TWR or len(r[1]) < 5 or struct.unpack_from("<H", r[1], 2)[0] != tag_id:
+        return False
+    s = r[1][4]                                    # data_status: high nibble UWB, low nibble LoRa, 0 = received
+    return (s & 0xF0) == 0 or (s & 0x0F) == 0
+
+
+def wake_tag(ser, tag_id, timeout=30.0, log=print):
+    """Wake sleeping tag `tag_id` through the anchor on `ser`: a LoRa wake-up every WAKE_RETRY s until the
+    tag is heard (then it stays awake 15 min after the last poll it answers). Leaves FOTA flasher mode
+    first: the flasher owns the radios. Returns True when the tag was heard."""
+    st = status(ser)
+    if not st:
+        raise FotaError("no STATUS reply from the board on this port")
+    if st[1] == 0xFF or not st[0].startswith(("anc", "sC")):
+        raise FotaError(f"the board on this port runs {st[0]!r}: only an anchor can send LoRa wake-ups")
+    s = fota_status(ser)
+    if s and s["mode"]:
+        fota_exit(ser)
+    tag_heard(ser, tag_id)     # drop it: the first reply reports everything since the anchor's last reply
+    deadline = time.monotonic() + timeout
+    sent, last_sent = 0, None
+    while time.monotonic() < deadline:
+        time.sleep(WAKE_POLL)
+        if tag_heard(ser, tag_id):
+            log(f"tag {tag_id} is awake" + (f" ({sent} wake-up(s) sent)" if sent else ""))
+            return True
+        if last_sent is None or time.monotonic() - last_sent >= WAKE_RETRY:
+            r = xfer(ser, OP_WAKEUP, struct.pack("<H", tag_id), timeout=0.4)
+            if not r or r[0] != OP_WAKEUP:
+                raise FotaError(f"WAKEUP_MODE: no reply ({r})")
+            sent, last_sent = sent + 1, time.monotonic()
+            log(f"LoRa wake-up {sent} to tag {tag_id}")
+    log(f"tag {tag_id} not heard after {timeout:.0f} s: check its id, battery and distance")
+    return False
+
+
+def cmd_wake(ser, a):
+    return 0 if wake_tag(ser, a.tag, a.timeout) else 1
+
+
 def cmd_discover(ser, a):
     found = fota_discover(ser)
     if not a.stay:
@@ -441,17 +493,24 @@ def main():
     ad = sub.add_parser("antenna-delay", help="read or set per-device antenna delays (3.1.5+)")
     ad.add_argument("--set", nargs=2, type=int, metavar=("TX", "RX"), help="0 or 65535 = default")
     sub.add_parser("fota-exit")
+    w = sub.add_parser("wake", help="wake a sleeping tag over LoRa (the board on --port must be an anchor)")
+    w.add_argument("tag", type=int, help="tag id (Status self_id)")
+    w.add_argument("--timeout", type=float, default=30.0, help="seconds to keep trying")
     sub.add_parser("selftest")
     a = ap.parse_args()
     if a.cmd == "selftest":
         assert crc32_mpeg2(b"123456789") == 0x0376E6E7
         assert frame(OP_STATUS) == bytes([11, 3, 14])
+        assert frame(OP_WAKEUP, struct.pack("<H", 19)) == bytes([6, 5, 19, 0, 30])
+        for img, kind, ver in ((b"x\0anc4.0.0\0", 0, "anc4.0.0"), (b"tag3.3.1\0", 1, "tag3.3.1"),
+                               (b"sC3.0.40\0", 0, "sC3.0.40"), (b"anc4.\0", None, "?")):
+            assert image_kind(img) == kind and image_version(img) == ver, img
         print("ok")
         return 0
     cmds = {"status": cmd_status, "flash": cmd_flash, "fota": cmd_fota, "query": cmd_query,
             "fota-exit": cmd_fota_exit,
             "discover": cmd_discover, "led-test": cmd_led_test,
-            "antenna-delay": cmd_antenna_delay}
+            "antenna-delay": cmd_antenna_delay, "wake": cmd_wake}
     with serial.Serial(a.port, BAUD, timeout=0.05) as ser:
         try:
             return cmds[a.cmd](ser, a)
