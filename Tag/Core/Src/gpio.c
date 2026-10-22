@@ -63,8 +63,8 @@ void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(LED_B_GPIO_Port, LED_B_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, IMU_INT_ACC_Pin|IMU_INT_GYR_Pin|IMU_SPI1_CS_Pin|SX_LED_TX_Pin
-                          |SX_OPT_Pin|SX_RESET_Pin|DW_PA_BYPASS_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, IMU_SPI1_CS_Pin|SX_LED_TX_Pin|SX_OPT_Pin|SX_RESET_Pin
+                          |DW_PA_BYPASS_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, IMU_NCS_GYR_Pin|SX_ANT_SW_Pin|SX_SPI2_CS_Pin, GPIO_PIN_RESET);
@@ -113,10 +113,16 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LED_B_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : IMU_INT_ACC_Pin IMU_INT_GYR_Pin IMU_SPI1_CS_Pin SX_LED_TX_Pin
-                           SX_OPT_Pin SX_RESET_Pin DW_PA_BYPASS_Pin */
-  GPIO_InitStruct.Pin = IMU_INT_ACC_Pin|IMU_INT_GYR_Pin|IMU_SPI1_CS_Pin|SX_LED_TX_Pin
-                          |SX_OPT_Pin|SX_RESET_Pin|DW_PA_BYPASS_Pin;
+  /*Configure GPIO pins : IMU_INT_ACC_Pin IMU_INT_GYR_Pin */
+  GPIO_InitStruct.Pin = IMU_INT_ACC_Pin|IMU_INT_GYR_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : IMU_SPI1_CS_Pin SX_LED_TX_Pin SX_OPT_Pin SX_RESET_Pin
+                           DW_PA_BYPASS_Pin */
+  GPIO_InitStruct.Pin = IMU_SPI1_CS_Pin|SX_LED_TX_Pin|SX_OPT_Pin|SX_RESET_Pin
+                          |DW_PA_BYPASS_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
