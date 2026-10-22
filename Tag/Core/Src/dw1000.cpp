@@ -292,6 +292,100 @@ static void dwSetLde(bool nlos) {
 static uint16_t seen_pc[2] = {0xFFFF, 0xFFFF};
 static uint32_t multi_tick = 0;
 static bool dw_reinit_due = false;	// a configuration item asked for a full DW1000 re-init
+
+/* ---------------- range profiles (#7, main.h LINK_PROFILES) ----------------
+ * The profile in force changes only on a confirmed commit (or toward profile 0). Reverts need no
+ * frame: 500 ms without a poll on the new profile -> the previous one, 1 s -> profile 0, two
+ * stations -> profile 0. When idle on a profile other than 0 the receiver alternates with profile 0
+ * every 200 ms, so an anchor that fell back can always reach the tag. A watchdog checks once a
+ * second that the DW1000 runs the configuration it should. */
+static const struct { uint8_t br; uint16_t plen, pac, sfdto; uint8_t lora_sf; } prof_tab[LINK_PROFILES] = {
+	{ DWT_BR_110K, DWT_PLEN_2048, DWT_PAC64, 2048 + 1 + 64 - 64, LORA_SF12 },	// 0 far (ground)
+	{ DWT_BR_850K, DWT_PLEN_1024, DWT_PAC32, 1024 + 1 + 16 - 32, LORA_SF10 },	// 1 mid
+	{ DWT_BR_850K, DWT_PLEN_512,  DWT_PAC16, 512 + 1 + 16 - 16,  LORA_SF8  },	// 2 near
+};
+static uint8_t prof_cur = 0;		// profile in force
+static uint8_t prof_prev = 0;		// before the last switch
+static uint8_t prof_pend = 0xFF;	// prepared (LITEM_PROFILE_PREP)
+static uint8_t prof_due = 0xFF;		// committed, applied outside an exchange
+static uint8_t prof_rx = 0;			// configuration the DW1000 runs now (prof_cur, or 0 while rotating)
+static uint32_t prof_tick = 0;		// last poll received on prof_cur
+static uint32_t prof_wd_tick = 0;
+uint8_t prof_reason = PROF_R_NONE;	// last revert reason
+
+static void dwUseProfile(uint8_t p) {
+	if (p >= LINK_PROFILES)
+		p = 0;
+	if (p == prof_rx)
+		return;
+	config.dataRate = prof_tab[p].br;
+	config.txPreambLength = prof_tab[p].plen;
+	config.rxPAC = prof_tab[p].pac;
+	config.sfdTO = prof_tab[p].sfdto;
+	dwt_forcetrxoff();
+	dwConfig(&config);		// antenna delays, LDE, timeouts, TX power: all re-applied
+	prof_rx = p;
+}
+
+static void dwProfileSet(uint8_t p, uint8_t reason) {
+	if (p != prof_cur) {
+		prof_prev = prof_cur;
+		prof_cur = p;
+		if (reason != PROF_R_HOST)
+			prof_reason = reason;
+	}
+	prof_tick = HAL_GetTick();
+	Lora_SetBeaconSF(prof_tab[prof_cur].lora_sf);
+}
+
+// FOTA and every reset path: profile 0, now.
+void dwProfileGround(void) {
+	prof_cur = prof_prev = 0;
+	prof_pend = prof_due = 0xFF;
+	prof_rx = 0xFF;			// force the re-apply
+	dwUseProfile(0);
+	Lora_SetBeaconSF(prof_tab[0].lora_sf);
+}
+
+// Start of every receive window, outside any exchange.
+static void dwProfileTick(void) {
+	uint32_t now = HAL_GetTick();
+	if (prof_due != 0xFF) {
+		dwProfileSet(prof_due, PROF_R_HOST);
+		prof_due = 0xFF;
+	}
+	if (prof_cur != 0) {
+		uint32_t quiet = now - prof_tick;
+		if (dwMulti())
+			dwProfileSet(0, PROF_R_MULTI);
+		else if (quiet > 1000)
+			dwProfileSet(0, PROF_R_SILENCE);
+		else if (quiet > 500 && prof_prev != prof_cur && prof_prev != 0) {
+			uint32_t t = prof_tick;	// keep the 1 s total from the last frame on the new profile
+			dwProfileSet(prof_prev, PROF_R_SILENCE);
+			prof_tick = t;
+		}
+	}
+	// idle on a profile other than 0: every other 200 ms listen on profile 0
+	uint8_t rx = prof_cur;
+	if (prof_cur != 0 && now - prof_tick > 200 && ((now / 200) & 1))
+		rx = 0;
+	dwUseProfile(rx);
+
+	if (now - prof_wd_tick >= 1000) {	// watchdog: the radio must run prof_rx
+		prof_wd_tick = now;
+		uint32_t sys_cfg = dwt_read32bitreg(SYS_CFG_ID);
+		bool rx110k = (sys_cfg & SYS_CFG_RXM110K) != 0;
+		if (rx110k != (prof_tab[prof_rx].br == DWT_BR_110K)) {
+			prof_reason = PROF_R_WATCHDOG;
+			dwProfileGround();
+		}
+	}
+}
+
+uint8_t dwProfileCur(void) {
+	return prof_cur;
+}
 static uint32_t seen_tick[2] = {0, 0};
 
 static bool dwNotePoll(uint16_t src) {
@@ -343,6 +437,18 @@ uint16_t dwLinkItem(uint16_t src, uint8_t seq, uint8_t item, uint16_t value, uin
 		if (!repeat && Flash_SelfIdSet(item == LITEM_ANT_TX ? 1 : 2, value) == 0)
 			dwApplyAntennaDelays();
 		break;
+	case LITEM_PROFILE_PREP:
+		if (value >= LINK_PROFILES || dwMulti()) { *flags |= LACK_F_REJECTED; break; }
+		prof_pend = (uint8_t)value;
+		break;
+	case LITEM_PROFILE_COMMIT:		// switched outside the exchange, after this answer has gone out
+		if (value == 0)
+			prof_due = 0;
+		else if (value == prof_pend && !dwMulti())
+			prof_due = (uint8_t)value;
+		else
+			*flags |= LACK_F_REJECTED;
+		break;
 	case LITEM_XTAL:
 		if (value != 0xFF && value > FS_XTALT_MASK) { *flags |= LACK_F_REJECTED; break; }
 		if (!repeat && Flash_SelfIdSet(3, value == 0xFF ? 0xFFFF : value) == 0) {
@@ -358,6 +464,8 @@ uint16_t dwLinkItem(uint16_t src, uint8_t seq, uint8_t item, uint16_t value, uin
 	}
 	switch (item) {	// read-back
 	case LITEM_LISTEN_N: rb = Lora_ListenN(); break;
+	case LITEM_PROFILE_PREP: rb = prof_pend; break;
+	case LITEM_PROFILE_COMMIT: rb = (prof_due != 0xFF) ? prof_due : prof_cur; break;
 	case LITEM_ANT_TX:   rb = page[1]; break;
 	case LITEM_ANT_RX:   rb = page[2]; break;
 	case LITEM_XTAL:     rb = dwt_read8bitoffsetreg(FS_CTRL_ID, FS_XTALT_OFFSET) & FS_XTALT_MASK; break;
@@ -403,6 +511,7 @@ int dwRange(void) {
 	}
 	if (lde_nlos && HAL_GetTick() - last_ext_tick > LINK_SILENCE_MS)
 		dwSetLde(false);	// no anchor is steering it any more: LOS
+	dwProfileTick();
 	/* Activate reception immediately. */
 
 	tx_resp_msg.tag_no_lora = lora_rxInfo.no_lora;
@@ -478,6 +587,8 @@ int dwRange(void) {
 			bool ext = ext2 || ((frame_len == sizeof(twr_anchor_ext_msg_t)) && (rx_buffer.i9 == LINK_EXT_MARK));
 			bool multi = dwNotePoll(rx_buffer.src);
 			Lora_NoteUwbPoll(ext);	// sets the LoRa listen period
+			if (prof_rx == prof_cur)
+				prof_tick = HAL_GetTick();	// a frame on the profile in force
 			tx_resp_msg.des = rx_buffer.src;
 			lora_rxInfo.wakeup_detected = true; //enable Lora while recieve uwb
 			uint32 resp_tx_time;
@@ -522,7 +633,7 @@ int dwRange(void) {
 				tx_resp_ext.ack_seq = ack;
 				tx_resp_ext.lora_dbm = lora_rxInfo.no_lora ? LINK_LORA_KEEP : Lora_LinkPower();
 				tx_resp_ext.uwb_level = uwb_tx_level;
-				tx_resp_ext.profile_used = 0;
+				tx_resp_ext.profile_used = prof_cur;
 				if (ext2) {	// v2: same fields, plus the configuration item's answer
 					memcpy((uint8_t*)&tx_resp_ext2, (const uint8_t*)&tx_resp_ext, sizeof(twr_tag_ext_msg_t) - 2);
 					tx_resp_ext2.item = rx_buffer.item;

@@ -163,9 +163,10 @@ extern "C" {
  * 				[added] configuration channel (opcode 24): LoRa commands (inverted IQ) into the tag's listen
  * 				slots, extended UWB poll v2 as backup; beacon parse checks GetPayload; bench UWB level pin.
  * anc3.2.1	issue #5: same-station legacy polls keep the tag's LoRa power/LDE; owner-only fast fallback; station UWB level and LDE preset (opcode 22 bytes 11-12)
+ * anc3.3.0	#7 range profiles: opcode 25 SET_PROFILE, owner prepare/commit with the tag, rotation until proof, reverts to profile 0; beacon SF per profile
  */
 
-#define VERSION "anc3.2.1"
+#define VERSION "anc3.3.0"
 
 
 #define IS_TAG false
@@ -360,6 +361,16 @@ typedef struct {
     uint32_t last_lora_tick;
     // 9F / 9G
     uint32_t coexist_tick;  // last time the tag reported two stations or this anchor's backoff was armed (9K)
+    // range profiles (#7)
+    uint8_t  prof_cur;      // profile in force with this tag
+    uint8_t  prof_target;   // the host's last request
+    uint8_t  prof_prev;     // rotation partner (the profile before the switch)
+    uint8_t  prof_phase;    // PROF_P_*
+    uint8_t  prof_reason;   // last revert / refusal (PROF_R_*)
+    uint8_t  prof_seq;      // the host's sequence number
+    uint8_t  prof_rot;      // rotation: this poll on prof_target (1) or prof_prev (0)
+    uint8_t  prof_rx;       // configuration the DW1000 runs now
+    uint32_t prof_t0;       // phase start / deadline base
     uint8_t  station_hold;  // station UWB level dropped to maximum after misses
     uint32_t station_hold_tick;
     uint8_t  lde_nlos;      // NLOS preset active
@@ -401,6 +412,18 @@ typedef struct {
 extern LinkItem_t link_item;
 bool Link_ItemQueue(uint16_t tag, uint8_t item, uint16_t value);
 bool Link_ItemLoraDue(uint8_t beacon_index);	// send the command after this beacon?
+
+#define PROF_P_IDLE     0
+#define PROF_P_PREP     1   // owner: the tag is told to get ready
+#define PROF_P_COMMIT   2   // owner: the tag is told to switch
+#define PROF_P_ARMED    3   // other anchors: target known, polls stay on prof_cur until they miss
+#define PROF_P_ROTATE   4   // polls alternate prof_target / prof_prev until a reply decides
+#define PROF_ROTATE_MS  1000    // rotation without any reply: profile 0
+#define PROF_ARMED_MS   30000   // armed without the tag switching: give up
+bool Link_ProfileRequest(uint8_t seq, uint8_t profile);
+void Link_ProfileGround(uint8_t reason);
+uint8_t Link_ProfileSF(void);	// LoRa beacon SF for the profile in force
+void Lora_SetBeaconSF(uint8_t sf);	// Lora.cpp: SF the beacons arrive at
 
 extern LinkCfg_t link_cfg;
 extern LinkState_t link_st;
@@ -464,6 +487,22 @@ void SetAnchor_self_id();
 #define LITEM_ANT_TX        3       // TX antenna delay, flash; 0xFFFF = default
 #define LITEM_ANT_RX        4       // RX antenna delay, flash; 0xFFFF = default
 #define LITEM_XTAL          5       // DW1000 crystal trim 0..31, flash; 0xFF = clear
+#define LITEM_PROFILE_PREP  6       // #7: profile the tag should get ready for (nothing switches)
+#define LITEM_PROFILE_COMMIT 7      // #7: switch to it after this answer has gone out (0 = always allowed)
+
+/* Range profiles (#7). UWB channel 2, PRF 64, code 9 never change; LoRa commands, acks and wake-ups
+ * stay SF12 at maximum power - only the tag's beacon SF follows the profile. Profile 0 is the ground
+ * state: power-up, reset, wake-up, two stations, FOTA, and every unilateral revert land there. */
+#define LINK_PROFILES       3
+#define PROF_R_NONE         0       // revert / refusal reasons, reported to the host
+#define PROF_R_HOST         1       //   the host asked
+#define PROF_R_SILENCE      2       //   no frame on the new profile
+#define PROF_R_MISSES       3       //   missed polls
+#define PROF_R_MULTI        4       //   two stations share the tag
+#define PROF_R_NO_PROOF     5       //   the switch did not complete
+#define PROF_R_WATCHDOG     6       //   radio configuration did not match the profile
+#define PROF_R_FOTA         7
+#define PROF_R_UNSUPPORTED  8       //   tag too old, feature bit off, or no extended frames
 #define LITEM_NONE          0xFF    // extended poll v2: no item
 
 #define LACK_F_REJECTED     0x01    // value out of range: nothing changed

@@ -138,7 +138,7 @@ typedef struct {			// extended response: legacy bytes 0-17, then the tag's state
 
 /* Extended frames v2 (tag3.2.1 and later; the hello answer's bits 5..1 carry the version): v1 plus
  * one configuration item (LITEM_*, main.h), the backup path for what normally goes over LoRa. */
-#define LINK_VERSION        2
+#define LINK_VERSION        3       // 2: extended frames v2 (tag3.2.1); 3: range profiles (#7)
 #define LINK_VER_OF(b)      (((b) >> 1) & 0x1F)
 
 #pragma pack(push, 1)
@@ -291,7 +291,9 @@ void dwApplyXtalTrim(void);			//	per-device DW1000 crystal trim from flash, or t
 int dwRange(void);
 void dwmStatus( void );
 void dwRecover( void );
-bool dwMulti( void );				//	polls from two stations in the last LINK_MULTI_MS (9K)
+bool dwMulti( void );
+void dwProfileGround( void );		//	range profile 0 now (FOTA, resets)
+uint8_t dwProfileCur( void );				//	polls from two stations in the last LINK_MULTI_MS (9K)
 uint16_t dwLinkItem(uint16_t src, uint8_t seq, uint8_t item, uint16_t value, uint8_t *flags);				//	main loop: bounded re-initialisation while no_uwb
 
 void dw_PreSleep(void);

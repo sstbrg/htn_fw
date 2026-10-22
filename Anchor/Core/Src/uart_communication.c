@@ -249,9 +249,12 @@ void UART_Reply_Status(S_UART_MESSAGE *msg, S_UART_MESSAGE *reply)
 			| (link_st.reverting ? LINK_STATE_REVERT : 0)
 			| (Link_Coexisting() ? LINK_STATE_COEXIST : 0)
 			| (link_st.ext && link_st.echo_lde_nlos ? LINK_STATE_TAG_NLOS : 0)
-			| (link_st.station_hold ? LINK_STATE_HOLD_MAX : 0);
-	reply->op_stt_rply.profile_req = 0;
+			| (link_st.station_hold ? LINK_STATE_HOLD_MAX : 0)
+			| (link_st.prof_phase != PROF_P_IDLE ? LINK_STATE_SWITCHING : 0);
+	reply->op_stt_rply.profile_req = link_st.prof_target;
 	reply->op_stt_rply.profile_echo = link_st.ext ? link_st.echo_profile : 0xFF;
+	reply->op_stt_rply.profile_cur = link_st.prof_cur;
+	reply->op_stt_rply.profile_reason = link_st.prof_reason;
 	reply->op_stt_rply.req_lora_tx_dbm = (link_st.ext && link_cfg.lora_owner) ? link_st.lora_req : LINK_LORA_UNKNOWN;
 	reply->op_stt_rply.req_uwb_tx_level = link_st.uwb_level;
 	reply->op_stt_rply.tag_lora_tx_dbm = link_st.echo_lora_dbm;

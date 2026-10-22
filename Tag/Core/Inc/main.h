@@ -151,9 +151,10 @@ extern "C" {
  *				[added] configuration channel: LoRa listen window after every 1st/4th/20th beacon, inverted-IQ
  *				command + ack, extended UWB poll v2 backup; items: listen period, antenna delays, crystal trim.
  * tag3.2.1	issue #5: a legacy poll from the steering station keeps LoRa power and LDE preset; built WITH wakeup (sleeps until woken); no sleep during a command window
+ * tag3.3.0	#7 range profiles: prepare/commit items, 500 ms / 1 s reverts, profile-0 listen rotation, config watchdog; beacon SF per profile, commands and wake-ups SF12
  */
 
-#define VERSION "tag3.2.1"
+#define VERSION "tag3.3.0"
 
 #define IS_TAG true
 
@@ -253,6 +254,22 @@ enum
 #define LITEM_ANT_TX        3       // TX antenna delay, flash; 0xFFFF = default
 #define LITEM_ANT_RX        4       // RX antenna delay, flash; 0xFFFF = default
 #define LITEM_XTAL          5       // DW1000 crystal trim 0..31, flash; 0xFF = clear
+#define LITEM_PROFILE_PREP  6       // #7: profile the tag should get ready for (nothing switches)
+#define LITEM_PROFILE_COMMIT 7      // #7: switch to it after this answer has gone out (0 = always allowed)
+
+/* Range profiles (#7). UWB channel 2, PRF 64, code 9 never change; LoRa commands, acks and wake-ups
+ * stay SF12 at maximum power - only the tag's beacon SF follows the profile. Profile 0 is the ground
+ * state: power-up, reset, wake-up, two stations, FOTA, and every unilateral revert land there. */
+#define LINK_PROFILES       3
+#define PROF_R_NONE         0       // revert / refusal reasons, reported to the host
+#define PROF_R_HOST         1       //   the host asked
+#define PROF_R_SILENCE      2       //   no frame on the new profile
+#define PROF_R_MISSES       3       //   missed polls
+#define PROF_R_MULTI        4       //   two stations share the tag
+#define PROF_R_NO_PROOF     5       //   the switch did not complete
+#define PROF_R_WATCHDOG     6       //   radio configuration did not match the profile
+#define PROF_R_FOTA         7
+#define PROF_R_UNSUPPORTED  8       //   tag too old, feature bit off, or no extended frames
 #define LITEM_NONE          0xFF    // extended poll v2: no item
 
 #define LACK_F_REJECTED     0x01    // value out of range: nothing changed

@@ -152,7 +152,8 @@ bool Lora_LinkPending(void);
 int8_t Lora_LinkPower(void);
 // Configuration channel (main.h LCMD_*): beacons with a listen window after some of them
 void Lora_TagService(status_bits errors);
-bool Lora_TagCanSleep(void);			// not while a command window or ack owns the radio
+bool Lora_TagCanSleep(void);
+void Lora_SetBeaconSF(uint8_t sf);		// #7: SF of the beacons (commands and wake-ups stay SF12)			// not while a command window or ack owns the radio
 void Lora_NoteUwbPoll(bool extended);	// every UWB poll addressed to this tag
 void Lora_SetListenN(uint8_t n);		// host override, back to automatic after 30 s without commands
 uint8_t Lora_ListenN(void);

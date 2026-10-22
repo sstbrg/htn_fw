@@ -44,6 +44,9 @@ static int8_t last_req = TX_OUTPUT_POWER;
 static uint16_t owner_src = LINK_NO_OWNER;		// the anchor whose requests count
 static uint32_t owner_tick = 0;
 static uint32_t lora_tx_tick = 0;	// last SetTx, for the lost-interrupt recovery
+static uint8_t beacon_sf = LORA_SPREADING_FACTOR;	// #7: the profile's beacon SF
+static bool beacon_sf_on = false;	// the radio runs beacon_sf (only while a beacon is on air)
+static void lora_beacon_sf_restore(void);
 
 
 SX126xHal Radio(&hspi2, SX_SPI2_CS_GPIO_Port, SX_SPI2_CS_Pin,
@@ -237,6 +240,12 @@ void RunTXStateMachine(status_bits errors) {
 	PrepareBuffer(&Radio, &messageToSend);
 	ConfigureRadioTx(&Radio, &radioConfiguration);
 	Lora_ApplyTxPower();
+	if (beacon_sf != LORA_SPREADING_FACTOR) {	// #7: this beacon at the profile's SF, then back to SF12
+		ModulationParams_t mp = radioConfiguration.modParams;
+		mp.Params.LoRa.SpreadingFactor = (RadioLoRaSpreadingFactors_t)beacon_sf;
+		Radio.SetModulationParams(&mp);
+		beacon_sf_on = true;
+	}
 	lora_tx_tick = HAL_GetTick();
 	Radio.SetTx(radioConfiguration.txTimeout);
 	HAL_GPIO_TogglePin(SX_LED_TX_GPIO_Port, SX_LED_TX_Pin); // Turn TXLED On
@@ -338,10 +347,26 @@ static void lora_handle_command(void) {
 
 // Sleep only from plain beacon mode: normal IQ, the setting the wake listener needs.
 bool Lora_TagCanSleep(void) {
-	return lstate == LS_BEACON;
+	if (beacon_sf_on && Lora_TXidle())
+		lora_beacon_sf_restore();
+	return lstate == LS_BEACON && !beacon_sf_on;
+}
+
+void Lora_SetBeaconSF(uint8_t sf) {
+	beacon_sf = sf;
+}
+
+// After a beacon: back to SF12 (commands, acks and the wake listener never leave it).
+static void lora_beacon_sf_restore(void) {
+	if (!beacon_sf_on)
+		return;
+	Radio.SetModulationParams(&radioConfiguration.modParams);
+	beacon_sf_on = false;
 }
 
 void Lora_TagService(status_bits errors) {
+	if (beacon_sf_on && Lora_TXidle())
+		lora_beacon_sf_restore();
 	switch (lstate) {
 	case LS_LISTEN:
 		if (radioFlags.rxDone)
