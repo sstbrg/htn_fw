@@ -234,6 +234,7 @@ int fota_port_led_set(uint8_t idx, int on);	// LED test; returns LED count, -1 =
 void fota_port_uwb_restore(void);			// back to the normal UWB configuration
 void fota_port_uart_send(void *buf, uint32_t len);
 void fota_port_kick_wd(void);
+void fota_port_target_answered(void);		// answered a loader's DISCOVER/QUERY/HELLO: stay reachable
 
 #ifdef __cplusplus
 }

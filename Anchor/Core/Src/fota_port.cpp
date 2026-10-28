@@ -72,3 +72,8 @@ extern "C" void fota_port_kick_wd(void)
 {
 	refresh_WD();
 }
+
+extern "C" void fota_port_target_answered(void)
+{
+	// anchors never sleep
+}

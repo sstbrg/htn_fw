@@ -311,6 +311,7 @@ static void target_reply_info(uint8_t type, uint16_t des, uint16_t session, uint
 	strncpy(a->sw, VERSION, sizeof(a->sw));
 	a->app_crc = *(volatile uint32_t *)FOTA_HEADER_ADDRESS;
 	uwb_send(sizeof(fota_hdr_t) + sizeof(*a), 0);
+	fota_port_target_answered();
 }
 
 /* Called from the normal UWB receive loop for a frame starting with FOTA_FLAG. */

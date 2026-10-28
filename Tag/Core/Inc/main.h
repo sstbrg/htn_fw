@@ -154,9 +154,10 @@ extern "C" {
  * tag3.3.0	#7 range profiles: prepare/commit items, 500 ms / 1 s reverts, profile-0 listen rotation, config watchdog; beacon SF per profile, commands and wake-ups SF12
  * tag3.3.1	Radio watchdog checks preamble, SFD timeout, channel and PAC too (tells P1 from P2); mismatch -> full re-init on profile 0 (#7)
  * tag4.0.0	IMU INT pins PA1/PA2 are inputs (were outputs driven low against the BMI088 push-pull INT1/INT3: contention on every data-ready, battery drain while asleep); same fix as anc4.0.0
+ * tag4.0.2	FOTA: answering a loader's DISCOVER/QUERY/HELLO keeps the tag awake 15 min (a tag loader can't send LoRa wake-ups)
  */
 
-#define VERSION "tag4.0.0"
+#define VERSION "tag4.0.2"
 
 #define IS_TAG true
 
