@@ -491,6 +491,7 @@ void SetAnchor_self_id();
 #define LITEM_XTAL          5       // DW1000 crystal trim 0..31, flash; 0xFF = clear
 #define LITEM_PROFILE_PREP  6       // #7: profile the tag should get ready for (nothing switches)
 #define LITEM_PROFILE_COMMIT 7      // #7: switch to it after this answer has gone out (0 = always allowed)
+#define LITEM_HW            8       // #17: read-only, read-back = the tag's HW_Version (0 = Rev C, 2 = Rev D); older tags reject it
 
 /* Range profiles (#7). UWB channel 2, PRF 64, code 9 never change; LoRa commands, acks and wake-ups
  * stay SF12 at maximum power - only the tag's beacon SF follows the profile. Profile 0 is the ground

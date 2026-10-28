@@ -154,9 +154,10 @@ extern "C" {
  * tag3.3.0	#7 range profiles: prepare/commit items, 500 ms / 1 s reverts, profile-0 listen rotation, config watchdog; beacon SF per profile, commands and wake-ups SF12
  * tag3.3.1	Radio watchdog checks preamble, SFD timeout, channel and PAC too (tells P1 from P2); mismatch -> full re-init on profile 0 (#7)
  * tag4.0.0	IMU INT pins PA1/PA2 are inputs (were outputs driven low against the BMI088 push-pull INT1/INT3: contention on every data-ready, battery drain while asleep); same fix as anc4.0.0
+ * tag4.1.0	#17: UWB drive table per board revision (level 0 = the board's best drive; Rev D stays 30.5 dB until the PA knee is measured); configuration item LITEM_HW reports HW_Version over the air
  */
 
-#define VERSION "tag4.0.0"
+#define VERSION "tag4.1.0"
 
 #define IS_TAG true
 
@@ -258,6 +259,7 @@ enum
 #define LITEM_XTAL          5       // DW1000 crystal trim 0..31, flash; 0xFF = clear
 #define LITEM_PROFILE_PREP  6       // #7: profile the tag should get ready for (nothing switches)
 #define LITEM_PROFILE_COMMIT 7      // #7: switch to it after this answer has gone out (0 = always allowed)
+#define LITEM_HW            8       // #17: read-only, read-back = HW_Version (0 = Rev C, 2 = Rev D); older tags reject it
 
 /* Range profiles (#7). UWB channel 2, PRF 64, code 9 never change; LoRa commands, acks and wake-ups
  * stay SF12 at maximum power - only the tag's beacon SF follows the profile. Profile 0 is the ground
