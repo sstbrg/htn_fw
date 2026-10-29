@@ -166,9 +166,10 @@ extern "C" {
  * anc3.3.0	#7 range profiles: opcode 25 SET_PROFILE, owner prepare/commit with the tag, rotation until proof, reverts to profile 0; beacon SF per profile
  * anc3.3.1	Radio watchdog: DW1000 registers checked against the profile in use once a second; mismatch -> full re-init on profile 0 (#7)
  * anc4.0.0	BMI088 IMU read out: opcode 26 READ_IMU returns one raw acc/gyr/temp sample; IMU INT pins PA1/PA2 are inputs (were outputs driven low against the BMI088 push-pull INT)
+ * anc4.0.1	#15: range profile is station state; no valid range 1 s -> profile 0
  */
 
-#define VERSION "anc4.0.0"
+#define VERSION "anc4.0.1"
 
 
 #define IS_TAG false
@@ -372,7 +373,9 @@ typedef struct {
     uint8_t  prof_seq;      // the host's sequence number
     uint8_t  prof_rot;      // rotation: this poll on prof_target (1) or prof_prev (0)
     uint8_t  prof_rx;       // configuration the DW1000 runs now
+    uint8_t  prof_miss;     // consecutive unanswered polls, legacy or extended
     uint32_t prof_t0;       // phase start / deadline base
+    uint32_t prof_valid_tick;   // last valid range (#15)
     uint8_t  station_hold;  // station UWB level dropped to maximum after misses
     uint32_t station_hold_tick;
     uint8_t  lde_nlos;      // NLOS preset active
@@ -422,6 +425,7 @@ bool Link_ItemLoraDue(uint8_t beacon_index);	// send the command after this beac
 #define PROF_P_ROTATE   4   // polls alternate prof_target / prof_prev until a reply decides
 #define PROF_ROTATE_MS  1000    // rotation without any reply: profile 0
 #define PROF_ARMED_MS   30000   // armed without the tag switching: give up
+#define PROF_LOST_MS    1000    // #15: no valid range this long on a profile other than 0: profile 0
 bool Link_ProfileRequest(uint8_t seq, uint8_t profile);
 void Link_ProfileGround(uint8_t reason);
 uint8_t Link_ProfileSF(void);	// LoRa beacon SF for the profile in force

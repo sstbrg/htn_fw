@@ -307,7 +307,11 @@ static bool dw_reinit_due = false;	// a configuration item asked for a full DW10
  * frame: 500 ms without a poll on the new profile -> the previous one, 1 s -> profile 0, two
  * stations -> profile 0. When idle on a profile other than 0 the receiver alternates with profile 0
  * every 200 ms, so an anchor that fell back can always reach the tag. A watchdog checks once a
- * second that the DW1000 runs the configuration it should. */
+ * second that the DW1000 runs the configuration it should.
+ * #15: the tag is never held on a profile by part of the station. Every anchor that polled it in
+ * the last second before a switch, or on the profile since, must keep polling on it; one silent
+ * for PROF_ANCHOR_LOST_MS went back to profile 0 alone (or left), and the tag follows to profile 0,
+ * where the rest of the station finds it. */
 static const struct { uint8_t br; uint16_t plen, pac, sfdto; uint8_t lora_sf; } prof_tab[LINK_PROFILES] = {
 	{ DWT_BR_110K, DWT_PLEN_2048, DWT_PAC64, 2048 + 1 + 64 - 64, LORA_SF12 },	// 0 far (ground)
 	{ DWT_BR_850K, DWT_PLEN_1024, DWT_PAC32, 1024 + 1 + 16 - 32, LORA_SF10 },	// 1 mid
@@ -321,6 +325,45 @@ static uint8_t prof_rx = 0;			// configuration the DW1000 runs now (prof_cur, or
 static uint32_t prof_tick = 0;		// last poll received on prof_cur
 static uint32_t prof_wd_tick = 0;
 uint8_t prof_reason = PROF_R_NONE;	// last revert reason
+static uint16_t anc_src[PROF_ANCHORS];	// #15: anchors polling this tag on prof_cur
+static uint32_t anc_tick[PROF_ANCHORS];	//   their last poll on it
+static uint8_t anc_n = 0;
+
+static void dwAnchorNote(uint16_t src, uint32_t now) {
+	int i, old = 0;
+	for (i = 0; i < anc_n; i++) {
+		if (anc_src[i] == src) {
+			anc_tick[i] = now;
+			return;
+		}
+	}
+	if (anc_n < PROF_ANCHORS) {
+		i = anc_n++;
+	} else {
+		for (i = 1; i < PROF_ANCHORS; i++)	// full: replace the one heard least recently
+			if (now - anc_tick[i] > now - anc_tick[old])
+				old = i;
+		i = old;
+	}
+	anc_src[i] = src;
+	anc_tick[i] = now;
+}
+
+// Forget anchors silent for PROF_ANCHOR_LOST_MS; true if there was one.
+static bool dwAnchorAge(uint32_t now) {
+	bool lost = false;
+	for (int i = 0; i < anc_n; ) {
+		if (now - anc_tick[i] > PROF_ANCHOR_LOST_MS) {
+			lost = true;
+			anc_n--;
+			anc_src[i] = anc_src[anc_n];
+			anc_tick[i] = anc_tick[anc_n];
+		} else {
+			i++;
+		}
+	}
+	return lost;
+}
 
 static void dwProfileFields(uint8_t p) {
 	config.dataRate = prof_tab[p].br;
@@ -341,13 +384,17 @@ static void dwUseProfile(uint8_t p) {
 }
 
 static void dwProfileSet(uint8_t p, uint8_t reason) {
+	uint32_t now = HAL_GetTick();
 	if (p != prof_cur) {
 		prof_prev = prof_cur;
 		prof_cur = p;
 		if (reason != PROF_R_HOST)
 			prof_reason = reason;
+		dwAnchorAge(now);	// the station before the switch: each one gets a second to follow
+		for (int i = 0; i < anc_n; i++)
+			anc_tick[i] = now;
 	}
-	prof_tick = HAL_GetTick();
+	prof_tick = now;
 	Lora_SetBeaconSF(prof_tab[prof_cur].lora_sf);
 }
 
@@ -389,11 +436,12 @@ static void dwProfileTick(void) {
 		dwProfileSet(prof_due, PROF_R_HOST);
 		prof_due = 0xFF;
 	}
+	bool anchor_lost = dwAnchorAge(now);
 	if (prof_cur != 0) {
 		uint32_t quiet = now - prof_tick;
 		if (dwMulti())
 			dwProfileSet(0, PROF_R_MULTI);
-		else if (quiet > 1000)
+		else if (quiet > 1000 || anchor_lost)	// all silent, or one anchor left the station's profile
 			dwProfileSet(0, PROF_R_SILENCE);
 		else if (quiet > 500 && prof_prev != prof_cur && prof_prev != 0) {
 			uint32_t t = prof_tick;	// keep the 1 s total from the last frame on the new profile
@@ -629,8 +677,10 @@ int dwRange(void) {
 			bool ext = ext2 || ((frame_len == sizeof(twr_anchor_ext_msg_t)) && (rx_buffer.i9 == LINK_EXT_MARK));
 			bool multi = dwNotePoll(rx_buffer.src);
 			Lora_NoteUwbPoll(ext);	// sets the LoRa listen period
-			if (prof_rx == prof_cur)
+			if (prof_rx == prof_cur) {
 				prof_tick = HAL_GetTick();	// a frame on the profile in force
+				dwAnchorNote(rx_buffer.src, prof_tick);
+			}
 			tx_resp_msg.des = rx_buffer.src;
 			lora_rxInfo.wakeup_detected = true; //enable Lora while recieve uwb
 			uint32 resp_tx_time;

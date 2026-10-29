@@ -154,6 +154,7 @@ extern "C" {
  * tag3.3.0	#7 range profiles: prepare/commit items, 500 ms / 1 s reverts, profile-0 listen rotation, config watchdog; beacon SF per profile, commands and wake-ups SF12
  * tag3.3.1	Radio watchdog checks preamble, SFD timeout, channel and PAC too (tells P1 from P2); mismatch -> full re-init on profile 0 (#7)
  * tag4.0.0	IMU INT pins PA1/PA2 are inputs (were outputs driven low against the BMI088 push-pull INT1/INT3: contention on every data-ready, battery drain while asleep); same fix as anc4.0.0
+ * tag4.0.1	#15: one anchor silent on the profile 1 s -> profile 0
  * tag4.1.0	#17: UWB drive table per board revision (level 0 = the board's best drive; Rev D stays 30.5 dB until the PA knee is measured); configuration item LITEM_HW reports HW_Version over the air
  */
 
@@ -274,6 +275,8 @@ enum
 #define PROF_R_WATCHDOG     6       //   radio configuration did not match the profile
 #define PROF_R_FOTA         7
 #define PROF_R_UNSUPPORTED  8       //   tag too old, feature bit off, or no extended frames
+#define PROF_ANCHORS        8       // #15: anchors tracked per profile
+#define PROF_ANCHOR_LOST_MS 1000    // #15: one anchor silent on the profile this long -> profile 0
 #define LITEM_NONE          0xFF    // extended poll v2: no item
 
 #define LACK_F_REJECTED     0x01    // value out of range: nothing changed
