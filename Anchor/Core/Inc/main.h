@@ -167,9 +167,10 @@ extern "C" {
  * anc3.3.1	Radio watchdog: DW1000 registers checked against the profile in use once a second; mismatch -> full re-init on profile 0 (#7)
  * anc4.0.0	BMI088 IMU read out: opcode 26 READ_IMU returns one raw acc/gyr/temp sample; IMU INT pins PA1/PA2 are inputs (were outputs driven low against the BMI088 push-pull INT)
  * anc4.0.1	#15: range profile is station state; no valid range 1 s -> profile 0
+ * anc4.0.2	FOTA: fota_port_target_answered() hook (empty: anchors never sleep); same FOTA target code as tag4.1.1
  */
 
-#define VERSION "anc4.0.1"
+#define VERSION "anc4.0.2"
 
 
 #define IS_TAG false

@@ -156,9 +156,10 @@ extern "C" {
  * tag4.0.0	IMU INT pins PA1/PA2 are inputs (were outputs driven low against the BMI088 push-pull INT1/INT3: contention on every data-ready, battery drain while asleep); same fix as anc4.0.0
  * tag4.0.1	#15: one anchor silent on the profile 1 s -> profile 0
  * tag4.1.0	#17: UWB drive table per board revision (level 0 = the board's best drive; Rev D stays 30.5 dB until the PA knee is measured); configuration item LITEM_HW reports HW_Version over the air
+ * tag4.1.1	FOTA: answering a loader's DISCOVER/QUERY/HELLO keeps the tag awake 15 min (a tag loader can't send LoRa wake-ups)
  */
 
-#define VERSION "tag4.1.0"
+#define VERSION "tag4.1.1"
 
 #define IS_TAG true
 

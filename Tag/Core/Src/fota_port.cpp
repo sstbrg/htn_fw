@@ -13,6 +13,7 @@
 #include "rrc2040driver.h"
 #include "flash_handler.h"
 #include "stm32u5xx_it.h"
+#include "Power.h"
 
 extern uint8_t HW_Version;
 
@@ -64,4 +65,9 @@ extern "C" void fota_port_uart_send(void *buf, uint32_t len)
 extern "C" void fota_port_kick_wd(void)
 {
 	refresh_WD();
+}
+
+extern "C" void fota_port_target_answered(void)
+{
+	PWR_SetTimeOut(PWR_Duration_MyMessage);	// a loader found this tag: awake 15 min, as after an anchor poll
 }

@@ -452,13 +452,13 @@ class Wizard(tk.Tk):
     # ---------------- step 4 ----------------
     def step_target(self):
         r = self.release
-        wake = (" A sleeping tag hears nothing until it is woken over LoRa: type its id below, then Scan or "
-                "Connect (an anchor loader wakes it first; that can take a few seconds)."
-                if r["kind"] == "tag" else "")
+        wake = (" A sleeping tag hears nothing until it is woken over LoRa: type its id first (an anchor loader "
+                "wakes it; that can take a few seconds; with a tag loader, power-cycle the target tag and scan "
+                "within 6 s)." if r["kind"] == "tag" else "")
         self.clear_body("Find the target",
-                        f"Press Scan: the loader asks every board in UWB range to report. Pick the {r['kind']} to "
-                        f"update. (Boards need 3.1.1+ to answer a scan; for older 3.1.0 boards type the id below.)"
-                        + wake)
+                        f"Press Scan and wake up: the loader asks every board in UWB range to report. Pick the "
+                        f"{r['kind']} to update; with an id typed, the loader connects to it. (Boards need 3.1.1+ to "
+                        f"answer a scan; older 3.1.0 boards are reached by their id.)" + wake)
         cols = ("id", "kind", "firmware", "hw", "battery", "crc")
         self.tgt_tree = ttk.Treeview(self.body, columns=cols, show="headings", height=7, selectmode="browse")
         for c, w in zip(cols, (60, 70, 110, 50, 80, 110)):
@@ -468,11 +468,11 @@ class Wizard(tk.Tk):
         self.tgt_tree.bind("<<TreeviewSelect>>", self.on_pick_target)
         row = ttk.Frame(self.body)
         row.pack(fill="x", pady=6)
-        ttk.Button(row, text="Scan for targets", style="Big.TButton", command=self.scan_targets).pack(side="left")
-        ttk.Label(row, text="or id:").pack(side="left", padx=(16, 4))
+        ttk.Label(row, text="Target id (optional):").pack(side="left", padx=(0, 4))
         self.tid = tk.StringVar(value=str(getattr(self, "target_id", "")))
         ttk.Entry(row, textvariable=self.tid, width=7).pack(side="left")
-        ttk.Button(row, text="Connect", command=self.connect_target).pack(side="left", padx=6)
+        ttk.Button(row, text="Scan and wake up", style="Big.TButton",
+                   command=self.scan_targets).pack(side="left", padx=(12, 0))
         row2 = ttk.Frame(self.body)
         row2.pack(fill="x", pady=4)
         ttk.Label(row2, text="Data rate:").pack(side="left")
@@ -488,8 +488,8 @@ class Wizard(tk.Tk):
         if self.release["kind"] != "tag":
             return
         if self.loader.get("kind") != "anchor":
-            self.log("the loader is a tag: it cannot send LoRa wake-ups, so the target tag must already be awake",
-                     "warn")
+            self.log("the loader is a tag: it cannot send LoRa wake-ups. Power-cycle the target tag and Scan within "
+                     "6 s; tag4.1.1+ then stays awake 15 min", "warn")
             return
         self.progress(10, f"LoRa wake-up of tag {tid}...")
         htn_fw.wake_tag(ser, tid, log=self.log)
@@ -521,8 +521,13 @@ class Wizard(tk.Tk):
             self.log(f"scan: {len(found)} board(s) answered" if found else
                      "scan: nobody answered (boards need 3.1.1+, tags must be awake, check distance)",
                      "ok" if found else "warn")
+            typed = [iid for iid, d in self.found.items() if str(d["id"]) == tid]
             same_kind = [iid for iid, d in self.found.items() if d["kind"] == want]
-            if len(same_kind) == 1:
+            if typed:
+                self.tgt_tree.selection_set(typed[0])      # selecting connects
+            elif tid.isdigit():
+                self.connect_target()      # not in the scan (3.1.0 boards don't answer one): ask it by id
+            elif len(same_kind) == 1:
                 self.tgt_tree.selection_set(same_kind[0])
         self.run(job, done)
 
