@@ -165,17 +165,13 @@ void LPL_EN(uint8_t en)
 // Channel control and PAC tuning as dwConfig() left them.
 static uint32_t dw_chan_ctrl = 0, dw_drx_tune2 = 0;
 
+static uint32_t dwTxPowerForLevel(uint8_t level);
+
 void dwConfig(dwt_config_t *config) {
 	dwt_txconfig_t tx_config;
 
 	tx_config.PGdly = 0xC2; //Channel 2 TC_PGDELAY
-	if (HW_Version == 2)
-	{
-		tx_config.power =  MAX_POWER;
-	}
-	else{
-		tx_config.power = 0x40404040; //10db
-	}
+	tx_config.power = dwTxPowerForLevel(0);	// the board's best drive (#17)
 	dwt_setlnapamode(DWT_PA_ENABLE | DWT_LNA_ENABLE ); //While using PA LNA Enable
 
 	dwt_enablegpioclocks(); //REQUIRED =: Sets PMSC_CTRL0 GPCE|GPRN so EXTRXE (GPIO6) actualy drives the LNA
@@ -216,12 +212,22 @@ void dwConfig(dwt_config_t *config) {
 	dw_drx_tune2 = dwt_read32bitoffsetreg(DRX_CONF_ID, DRX_TUNE2_OFFSET);
 }
 
-// TX_POWER register for a level: level 0 = the maximum dwConfig() sets, each level 3 dB lower.
+/* UWB drive per board revision (#17), DW1000 TX gain at level 0 in half-dB. Level 0 is the board's
+ * best drive, which is not always the register maximum: Rev D drives an external PA, and field data
+ * shows it overdriven (levels 0-2 range the same). Its base moves to the top of the PA's linear
+ * range once the bench sweep (anchor opcode 22 uwb_level_pin) finds it: knee at level k -> 61 - 6 * k.
+ * Every fallback (legacy poll, revert, lost link, FOTA) asks for level 0, so it lands here too. */
+#define TX_DRIVE_REV_C		20	// 10 dB (0x40404040)
+#define TX_DRIVE_REV_D		61	// 30.5 dB (0x1F1F1F1F, the register maximum) until the sweep
+
+static int dwTxDrive(void) {
+	return (HW_Version == 2) ? TX_DRIVE_REV_D : TX_DRIVE_REV_C;
+}
+
+// TX_POWER register for a level: level 0 = the board's drive above, each level 3 dB lower.
 // Gain per byte = coarse (bits 7..5: 0 = 15 dB .. 6 = 0 dB, 2.5 dB steps) + fine (bits 4..0, 0.5 dB).
 static uint32_t dwTxPowerForLevel(uint8_t level) {
-	uint8_t base = (HW_Version == 2) ? (MAX_POWER & 0xFF) : 0x40;
-	int gain = (6 - (base >> 5)) * 5 + (base & 0x1F);	// half-dB
-	gain -= 6 * level;
+	int gain = dwTxDrive() - 6 * level;	// half-dB
 	if (gain < 0)
 		gain = 0;
 	int coarse = gain / 5;
@@ -236,9 +242,7 @@ static uint32_t dwTxPowerForLevel(uint8_t level) {
 
 // Quietest level this board can do: levels below 0 dB gain all read the same.
 static uint8_t dwTxLevelFloor(void) {
-	uint8_t base = (HW_Version == 2) ? (MAX_POWER & 0xFF) : 0x40;
-	int gain = (6 - (base >> 5)) * 5 + (base & 0x1F);
-	int floor = gain / 6;
+	int floor = dwTxDrive() / 6;
 	return (floor > LINK_UWB_LEVELS - 1) ? LINK_UWB_LEVELS - 1 : floor;
 }
 
@@ -510,6 +514,7 @@ uint16_t dwLinkItem(uint16_t src, uint8_t seq, uint8_t item, uint16_t value, uin
 
 	switch (item) {
 	case LITEM_NOP:
+	case LITEM_HW:	// read-only: the value is ignored
 		break;
 	case LITEM_LISTEN_N:
 		if (value < 1 || value > 255) { *flags |= LACK_F_REJECTED; break; }
@@ -553,6 +558,7 @@ uint16_t dwLinkItem(uint16_t src, uint8_t seq, uint8_t item, uint16_t value, uin
 	case LITEM_ANT_TX:   rb = page[1]; break;
 	case LITEM_ANT_RX:   rb = page[2]; break;
 	case LITEM_XTAL:     rb = dwt_read8bitoffsetreg(FS_CTRL_ID, FS_XTALT_OFFSET) & FS_XTALT_MASK; break;
+	case LITEM_HW:       rb = HW_Version; break;
 	default: break;
 	}
 	if (lde_nlos) *flags |= LACK_F_LDE_NLOS;
