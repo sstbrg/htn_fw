@@ -489,7 +489,7 @@ class Wizard(tk.Tk):
             return
         if self.loader.get("kind") != "anchor":
             self.log("the loader is a tag: it cannot send LoRa wake-ups. Power-cycle the target tag and Scan within "
-                     "6 s; tag4.0.2+ then stays awake 15 min", "warn")
+                     "6 s; tag4.1.1+ then stays awake 15 min", "warn")
             return
         self.progress(10, f"LoRa wake-up of tag {tid}...")
         htn_fw.wake_tag(ser, tid, log=self.log)
