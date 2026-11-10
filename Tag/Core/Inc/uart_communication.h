@@ -265,6 +265,7 @@ typedef enum
 	/*15*/UART_OPCODE_UPDATE_FW,
 	/*20*/UART_OPCODE_ANT_DELAY = 20,		// per-device antenna delays {tx, rx} in flash; empty = read
 	/*23*/UART_OPCODE_XTAL_TRIM = 23,		// DW1000 crystal trim {trim 0..31, 0xFF = clear} in flash; empty = read
+	/*27*/UART_OPCODE_HW_REV = 27,			// #21: board revision {rev 0..7, 0xFF = clear} in flash, reboots; empty = read
 
 
 	/*EE*/UART_OPCODE_ERROR = 0xEE,

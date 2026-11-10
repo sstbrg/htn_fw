@@ -60,8 +60,12 @@ be any tag or anchor running 3.1.0 or newer. The board you update (the
    wake-up), and **Start update** wakes it again in case it fell back asleep.
    A woken tag stays awake 15 minutes after the last poll it answered. A tag
    loader cannot send wake-ups.
+   Then pick the **Board revision** printed on the target board (Rev C, C2,
+   D). It is required, see [Board revision](#board-revision).
 5. **Flash and verify.** Press **Start update** and wait for **Update OK**.
-   Then press **Leave FOTA loader mode** so the loader goes back to normal work.
+   After the image is verified, the loader stores the board revision on the
+   target and checks that the target runs on it. Then press **Leave FOTA loader
+   mode** so the loader goes back to normal work.
 
 An update of about 120 KB takes roughly 12 seconds: 5 s countdown, under 1 s
 of data, then the target writes flash, reboots, and the loader checks it.
@@ -123,7 +127,33 @@ After an update, or when a session is aborted, both boards return to the
 normal ranging UWB settings; the fast data-rate settings only exist during a
 transfer.
 
+### Board revision
+
+Whoever flashes a board states its revision: C, C2 or D (as printed on the
+board; 0-7 for later boards). The firmware (anc4.1.0 / tag4.2.0 and later)
+stores it in the board's self-id page, next to the id and antenna delays, and
+uses it for the UART, the LED pins and the UWB drive. Without a stored
+revision the strap pins decide, as before; a Rev D board with an open strap
+then reads as Rev C (#21). Flashing the app over USB, FOTA or SWD keeps the
+stored revision, and so does `SET_ID`.
+
+The bootloader is not changed and still picks its UART from the strap pins:
+a board whose straps read wrong cannot be flashed over USB. Use SWD
+(`tools/flash_swd.sh`) or FOTA.
+
 ## Command line
+
+Flash scripts (the revision is required):
+
+```bash
+tools/flash_usb.sh /dev/ttyUSB0 anchor --hw C          # latest release over the USB bootloader
+tools/flash_swd.sh tag --hw D                          # latest release over an ST-Link
+tools/flash_usb.sh /dev/ttyUSB1 tag --hw D 4.2.0 -y    # a given release, no prompt
+```
+
+Both read the board first and refuse the other kind of firmware (`--force`
+overrides). `flash_swd.sh` writes slot 4 of the self-id page itself
+(0x081FE000, bank 1; the bootloader is not touched) and checks it reads back.
 
 ```bash
 $PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB0 status
@@ -136,6 +166,10 @@ $PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB0 flash releases/tag/3.1.3/Tag.bi
 $PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB1 led-test          # which LEDs are fitted
 $PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB1 antenna-delay     # per-device UWB antenna delays (3.1.5+)
 $PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB1 antenna-delay --set 16550 16500
+$PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB1 hw                # board revision: in use, stored, straps
+$PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB1 hw --set D        # store it (the board reboots on it)
+$PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB0 fota-hw 57 D      # store it on UWB target 57
+$PY tools/htn_fota/htn_fw.py --port /dev/ttyUSB0 fota 57 releases/tag/4.2.0/Tag.bin --hw D
 ```
 
 `--port` is the loader (for `fota`, `discover`, `query`), the anchor that
@@ -143,7 +177,8 @@ sends the LoRa wake-up (for `wake`), or the board itself (for `status`,
 `flash`). Stable port names are under `/dev/serial/by-id/`. `wake` leaves
 FOTA loader mode first and keeps trying for `--timeout` seconds (default 30).
 `fota` options: `--rate 6m8|850k|110k` (starting rate), `--stay` (keep the
-loader in FOTA mode).
+loader in FOTA mode), `--hw C|C2|D|0-7` (store the board revision once the
+new image runs). `flash` takes `--hw` too.
 
 `flash` uses the board's USB bootloader and works on any firmware version. It
 is how the first FOTA-capable firmware gets onto a board, and how the loader
@@ -191,6 +226,8 @@ Building by hand: `tools/build.sh Anchor`, `tools/build.sh Tag`,
 | `battery too low` | Charge the loader or the target above 30 %. |
 | `wrong device kind` | Anchor firmware picked for a tag or the reverse. |
 | Board stuck in the bootloader (`status` shows HW=255) | `htn_fw.py flash <image>` over USB. |
+| Board reports the wrong HW revision (a Rev D tag as HW 0, no answer on USB, a LED stuck on) | A revision strap is open. Store the revision: `tools/flash_swd.sh … --hw D`, or over UWB `htn_fw.py fota-hw <id> D`. |
+| `board revision not confirmed` | The target runs firmware before anc4.1.0 / tag4.2.0: update it first. |
 
 ## Firmware side
 

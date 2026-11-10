@@ -71,3 +71,10 @@ extern "C" void fota_port_target_answered(void)
 {
 	PWR_SetTimeOut(PWR_Duration_MyMessage);	// a loader found this tag: awake 15 min, as after an anchor poll
 }
+
+extern "C" int fota_port_hw_store(uint8_t rev)
+{
+	if (((const uint16_t*)FLASH_SELF_ID_ADDRESS)[SELF_ID_SLOT_HW] == rev)
+		return 0;
+	return Flash_SelfIdSet(SELF_ID_SLOT_HW, rev) == 0 ? 1 : -1;
+}

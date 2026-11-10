@@ -15,6 +15,9 @@
  *   target writes bank 2 from RAM (verify + retry), resets; bootloader checks CRC
  *   flasher --UWB (normal config)--> target : HELLO(query) to confirm new CRC/version
  *
+ * Board revision (#21): QUERY with a revision sends HELLO(query + FOTA_HELLO_SET_HW); the target
+ * stores it (self-id page slot 4), answers and reboots on it. The PC queries again to confirm.
+ *
  * Discovery: the flasher broadcasts DISCOVER; every target in range answers
  * with DISCOVER_ACK (id, kind, version, battery, CRC) in a random slot.
  * Data rate: starts at the requested rate and steps down after a lost link.
@@ -44,7 +47,7 @@ extern "C" {
 #define UART_OPCODE_FOTA_LOAD_DATA	0x42	// {offset, data[<=128]}
 #define UART_OPCODE_FOTA_START		0x43	// start the UWB session
 #define UART_OPCODE_FOTA_STATUS		0x44	// read flasher state / progress / target info
-#define UART_OPCODE_FOTA_QUERY		0x45	// {target} ask a target for its version/CRC
+#define UART_OPCODE_FOTA_QUERY		0x45	// {target[, rev]} ask a target for its version/CRC; rev 0..FOTA_HW_MAX also sets its board revision
 #define UART_OPCODE_FOTA_ABORT		0x46	// abort the running session
 #define UART_OPCODE_FOTA_EXIT		0x47	// leave FOTA flasher mode (back to normal operation)
 #define UART_OPCODE_FOTA_DISCOVER	0x48	// find FOTA targets in UWB range (broadcast)
@@ -97,6 +100,8 @@ enum fota_status_code {
 };
 
 #define FOTA_HELLO_QUERY	0x01	// HELLO flag: report info only, don't arm
+#define FOTA_HELLO_SET_HW	0x02	// with FOTA_HELLO_QUERY: store fota_hello_t.hw as the board revision, reboot (#21)
+#define FOTA_HW_MAX			7		// board revisions 0..7 (0 = Rev C, 1 = Rev C2, 2 = Rev D)
 #define FOTA_BROADCAST		0xFFFF
 #define FOTA_MIN_BATTERY	30		// %; battery 0xFF = externally powered, always allowed
 #define FOTA_DISCOVER_MAX	32
@@ -126,8 +131,10 @@ typedef struct {
 	uint32_t crc;
 	uint8_t kind;
 	uint8_t rate;
-	uint8_t flags;		// FOTA_HELLO_QUERY
+	uint8_t flags;		// FOTA_HELLO_QUERY, FOTA_HELLO_SET_HW
+	uint8_t hw;			// FOTA_HELLO_SET_HW: board revision; older flashers end the frame before it
 } fota_hello_t;
+#define FOTA_HELLO_MIN_LEN	(sizeof(fota_hello_t) - 1)	// a HELLO from a flasher before #21
 
 typedef struct {
 	uint8_t status;		// enum fota_status_code
@@ -235,6 +242,7 @@ void fota_port_uwb_restore(void);			// back to the normal UWB configuration
 void fota_port_uart_send(void *buf, uint32_t len);
 void fota_port_kick_wd(void);
 void fota_port_target_answered(void);		// answered a loader's DISCOVER/QUERY/HELLO: stay reachable
+int fota_port_hw_store(uint8_t rev);		// #21: store the board revision; 1 = stored, 0 = already so, -1 = failed
 
 #ifdef __cplusplus
 }

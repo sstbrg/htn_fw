@@ -157,9 +157,11 @@ extern "C" {
  * tag4.0.1	#15: one anchor silent on the profile 1 s -> profile 0
  * tag4.1.0	#17: UWB drive table per board revision (level 0 = the board's best drive; Rev D stays 30.5 dB until the PA knee is measured); configuration item LITEM_HW reports HW_Version over the air
  * tag4.1.1	FOTA: answering a loader's DISCOVER/QUERY/HELLO keeps the tag awake 15 min (a tag loader can't send LoRa wake-ups)
+ * tag4.2.0	#21: board revision stored in the self-id page (slot 4) wins over the strap pins; set with UART opcode 27
+ *				or over UWB (FOTA query with a revision); SET_ID keeps it
  */
 
-#define VERSION "tag4.1.1"
+#define VERSION "tag4.2.0"
 
 #define IS_TAG true
 
@@ -232,6 +234,11 @@ enum
 	VER_R1,
 	VER_R2,
 };
+
+/* Board revision (#21): stated when the board is flashed and stored in the self-id page, slot 4; it
+ * wins over the strap pins, which read Rev C when a Rev D strap is open. 0xFFFF = none stored. */
+#define SELF_ID_SLOT_HW     4
+#define HW_REV_MAX          7       // 0 = Rev C, 1 = Rev C2, 2 = Rev D
 
 #define SRAM_BKUP_REGISTER  0X40036400
 #define SRAM_BKUP_REGISTER_CLEAR 0

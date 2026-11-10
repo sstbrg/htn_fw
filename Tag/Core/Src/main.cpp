@@ -100,6 +100,7 @@ S_UART_MESSAGE msg;
 S_UART_MESSAGE reply;
 
 uint8_t HW_Version;
+static uint8_t HW_Strap;	// what the strap pins read (#21)
 bool wakeup_switch = true;
 
 void printStt(void)
@@ -201,6 +202,47 @@ static void Xtal_Trim_Command(S_UART_MESSAGE *msg) {
 	r[4] = dwt_read8bitoffsetreg(FS_CTRL_ID, FS_XTALT_OFFSET) & FS_XTALT_MASK;
 	r[5] = checksum(r, sizeof(r));
 	UART_SendMessage(r, sizeof(r));
+}
+
+// UART_OPCODE_HW_REV (#21): {rev u8} 0..HW_REV_MAX stores the board revision (self-id page slot 4),
+// 0xFF clears it (the strap pins decide again), empty = read. Reply {status, active, stored
+// (0xFF = none), straps}. A change reboots the board once the reply is out: UART, LEDs and radio
+// drive are set up for the revision at power-up.
+static void Hw_Rev_Command(S_UART_MESSAGE *msg) {
+	static uint8_t r[7];
+	uint8_t status = 0;
+	uint16_t stored = ((const uint16_t*)FLASH_SELF_ID_ADDRESS)[SELF_ID_SLOT_HW];
+	bool changed = false;
+	if (msg->header.length >= sizeof(S_HEADER) + 1 + 1) {
+		uint8_t v = msg->buff[0];
+		uint16_t want = (v == 0xFF) ? 0xFFFF : v;
+		if (v > HW_REV_MAX && v != 0xFF) {
+			status = 2;		// out of range
+		} else if (want != stored) {
+			uint16_t page[8];
+			memcpy(page, (const void*)FLASH_SELF_ID_ADDRESS, sizeof(page));
+			page[SELF_ID_SLOT_HW] = want;
+			if (Flash_Erase(FLASH_SELF_ID_USER_BANK, FLASH_SELF_ID_PAGE) != HAL_OK
+					|| Flash_Write(FLASH_SELF_ID_ADDRESS, (uint64_t*)page, 1) != HAL_OK) {
+				status = 1;
+			} else {
+				stored = want;
+				changed = true;
+			}
+		}
+	}
+	r[0] = msg->header.opcode;
+	r[1] = sizeof(r);
+	r[2] = status;
+	r[3] = HW_Version;
+	r[4] = (stored <= HW_REV_MAX) ? (uint8_t)stored : 0xFF;
+	r[5] = HW_Strap;
+	r[6] = checksum(r, sizeof(r));
+	UART_SendMessage(r, sizeof(r));
+	if (changed) {
+		HAL_Delay(50);		// the reply goes out by DMA
+		HAL_NVIC_SystemReset();
+	}
 }
 
 /* USER CODE END 0 */
@@ -364,7 +406,7 @@ int main(void)
 			{
 //				uint16_t new_id = msg.set_id_req.new_id;
 				const uint16_t *page = (const uint16_t*)FLASH_SELF_ID_ADDRESS;	// keep the antenna delays
-				uint16_t new_id[8] = {msg.set_id_req.new_id,page[1],page[2],page[3],0xFFFF,0xFFFF,0xFFFF,0xFFFF};	// keep delays and crystal trim
+				uint16_t new_id[8] = {msg.set_id_req.new_id,page[1],page[2],page[3],page[SELF_ID_SLOT_HW],0xFFFF,0xFFFF,0xFFFF};	// keep delays, crystal trim and board revision
 
 				//uint64_t Data = msg.set_id_req.new_id;
 				uint8_t error;
@@ -396,6 +438,11 @@ int main(void)
 			case UART_OPCODE_XTAL_TRIM:
 			{
 				Xtal_Trim_Command(&msg);
+				break;
+			}
+			case UART_OPCODE_HW_REV:
+			{
+				Hw_Rev_Command(&msg);
 				break;
 			}
 			case UART_OPCODE_LOOPBACK:
@@ -546,11 +593,14 @@ VER_PIN RevC2[] = {
 		{GPIOC, GPIO_PIN_7},	// VER2_1
 		{GPIOC, GPIO_PIN_8},	// VER2_2
 };
+// The stored board revision (#21) wins; without one, the strap pins decide.
 void read_hw_version(void){
-	HW_Version = 0;
-	HW_Version |= READ_HW_PIN(RevC1[VER_R0],VER_R0) | READ_HW_PIN(RevC2[VER_R0],VER_R0);
-	HW_Version |= READ_HW_PIN(RevC1[VER_R1],VER_R1) | READ_HW_PIN(RevC2[VER_R1],VER_R1);
-	HW_Version |= READ_HW_PIN(RevC1[VER_R2],VER_R2) | READ_HW_PIN(RevC2[VER_R2],VER_R2);
+	HW_Strap = 0;
+	HW_Strap |= READ_HW_PIN(RevC1[VER_R0],VER_R0) | READ_HW_PIN(RevC2[VER_R0],VER_R0);
+	HW_Strap |= READ_HW_PIN(RevC1[VER_R1],VER_R1) | READ_HW_PIN(RevC2[VER_R1],VER_R1);
+	HW_Strap |= READ_HW_PIN(RevC1[VER_R2],VER_R2) | READ_HW_PIN(RevC2[VER_R2],VER_R2);
+	uint16_t stored = ((const uint16_t*)FLASH_SELF_ID_ADDRESS)[SELF_ID_SLOT_HW];
+	HW_Version = (stored <= HW_REV_MAX) ? (uint8_t)stored : HW_Strap;
 }
 
 void main_init(){
