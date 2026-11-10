@@ -11,6 +11,12 @@ baud can leave a board's UART deaf until power-cycled).
   htn_fw.py --port /dev/ttyUSB0 query 6                          # ask target 6 for its version/CRC
   htn_fw.py --port /dev/ttyUSB0 fota-exit                        # leave FOTA flasher mode
   htn_fw.py --port /dev/ttyUSB0 wake 19                          # LoRa wake-up of sleeping tag 19 (anchor on --port)
+  htn_fw.py --port /dev/ttyUSB0 hw --set D                       # board revision of the board on --port (#21)
+  htn_fw.py --port /dev/ttyUSB0 fota-hw 57 D                     # board revision of UWB target 57
+
+Board revision (#21): C = 0, C2 = 1, D = 2 (or 0-7). Stored in the board's self-id page, it wins
+over the strap pins (a Rev D board with an open strap reads as Rev C). `flash` and `fota` take
+--hw to store it once the new firmware runs (anc4.1.0 / tag4.2.0 and later).
 
 UART frame: [opcode, length, payload..., checksum], length = whole frame,
 checksum = sum(frame[:-1]) & 0xFF.
@@ -39,6 +45,7 @@ OP_FOTA_STATUS, OP_FOTA_QUERY, OP_FOTA_ABORT, OP_FOTA_EXIT = 0x44, 0x45, 0x46, 0
 OP_FOTA_DISCOVER, OP_FOTA_DISCOVER_LIST = 0x48, 0x49
 OP_LED_TEST = 0x4B
 OP_ANT_DELAY = 20
+OP_HW_REV = 27
 CHUNK = 128
 CRC_LEN = 255 * 8192
 APP_BASE = 0x08200000
@@ -50,6 +57,32 @@ FOTA_ERR = ["ok", "busy", "wrong device kind", "bad size", "bad session", "CRC m
 FL_STATE = ["idle", "loading", "loaded", "hello", "countdown", "data", "commit",
             "verify-wait", "verify", "query", "discover", "done", "failed"]
 RATE_NAME = {0: "110k", 1: "850k", 2: "6m8"}
+HW_REV = {"C": 0, "C2": 1, "D": 2}
+HW_REV_MAX = 7
+HW_REBOOT_S = 2.5      # a board reboots after storing a new revision; a tag then stays awake 6 s
+
+
+def parse_rev(text):
+    """Board revision from a name (C, C2, D) or a number 0-7."""
+    t = str(text).strip().upper()
+    if t in HW_REV:
+        return HW_REV[t]
+    if t.isdigit() and int(t) <= HW_REV_MAX:
+        return int(t)
+    raise argparse.ArgumentTypeError(f"board revision {text!r}: use {', '.join(HW_REV)} or 0-{HW_REV_MAX}")
+
+
+def stores_hw(sw):
+    """True when firmware `sw` stores a board revision (anc4.1.0 / tag4.2.0 and later)."""
+    m = re.fullmatch(r"(anc|tag)(\d+)\.(\d+)\.(\d+)", sw or "")
+    if not m:
+        return False
+    return tuple(map(int, m.groups()[1:])) >= ((4, 1, 0) if m.group(1) == "anc" else (4, 2, 0))
+
+
+def rev_name(rev):
+    names = {v: k for k, v in HW_REV.items()}
+    return f"Rev {names[rev]} ({rev})" if rev in names else f"revision {rev}"
 
 
 def frame(opcode, payload=b""):
@@ -146,6 +179,56 @@ def cmd_status(ser, _a):
     return 0
 
 
+def hw_rev(ser, rev=None):
+    """Read the board revision of the board on `ser` (UART opcode 27), or store `rev` (0xFF clears it).
+    Returns {status, active, stored, straps} or None when the firmware has no opcode 27."""
+    r = xfer(ser, OP_HW_REV, b"" if rev is None else bytes([rev]))
+    if not r or r[0] != OP_HW_REV or len(r[1]) < 4:
+        return None
+    return dict(zip(("status", "active", "stored", "straps"), r[1][:4]))
+
+
+def hw_line(h):
+    stored = "none (the strap pins decide)" if h["stored"] == 0xFF else rev_name(h["stored"])
+    return f"board revision {rev_name(h['active'])}; stored {stored}; strap pins read {rev_name(h['straps'])}"
+
+
+def set_hw_uart(ser, rev, log=print):
+    """Store board revision `rev` on the board on `ser` and confirm it after the reboot. True on success."""
+    h = hw_rev(ser)
+    if h is None:
+        log("no reply to the board revision command: needs anc4.1.0 / tag4.2.0 or later")
+        return False
+    if h["active"] == rev and h["stored"] == rev:
+        log(hw_line(h))
+        return True
+    h = hw_rev(ser, rev)
+    if h is None or h["status"] != 0:
+        log(f"storing the board revision failed ({h})")
+        return False
+    time.sleep(HW_REBOOT_S)
+    h = hw_rev(ser)
+    if h is None:
+        log("no reply after the reboot")
+        return False
+    log(hw_line(h))
+    return h["active"] == rev and h["stored"] == rev
+
+
+def cmd_hw(ser, a):
+    if a.set is not None:
+        return 0 if set_hw_uart(ser, a.set) else 1
+    h = hw_rev(ser, 0xFF if a.clear else None)
+    if h is None:
+        print("no reply: the board revision command needs anc4.1.0 / tag4.2.0 or later")
+        return 1
+    if a.clear:
+        time.sleep(HW_REBOOT_S)
+        h = hw_rev(ser) or h
+    print(hw_line(h))
+    return 0 if h["status"] == 0 else 1
+
+
 def cmd_flash(ser, a):
     img = open(a.bin, "rb").read()
     check_image(img)
@@ -191,6 +274,9 @@ def cmd_flash(ser, a):
     time.sleep(2.0)
     st = status(ser)
     print_status("after", st) if st else print("no STATUS from app yet")
+    if a.hw is not None and not set_hw_uart(ser, a.hw):
+        print(f"FAILED to store {rev_name(a.hw)}")
+        return 1
     return 0
 
 
@@ -281,10 +367,11 @@ def fota_run(ser, on_status=None, timeout=120):
     raise FotaError("FOTA session did not finish in time")
 
 
-def fota_query(ser, target, timeout=4):
-    """Ask UWB target `target` for its version/CRC (enters flasher mode). Returns status or None."""
+def fota_query(ser, target, timeout=4, hw=None):
+    """Ask UWB target `target` for its version/CRC (enters flasher mode). Returns status or None.
+    With `hw`, the target also stores that board revision and reboots (anc4.1.0 / tag4.2.0 targets)."""
     fota_enter(ser)
-    p = fota_cmd(ser, OP_FOTA_QUERY, struct.pack("<H", target))
+    p = fota_cmd(ser, OP_FOTA_QUERY, struct.pack("<H", target) + (b"" if hw is None else bytes([hw])))
     if p[0] != 0:
         raise FotaError(f"QUERY refused: {err_text(p[0])}")
     deadline = time.monotonic() + timeout
@@ -295,6 +382,29 @@ def fota_query(ser, target, timeout=4):
         if s and FL_STATE[s["state"]] != "query":
             break
     return s if s and s["t_valid"] else None
+
+
+def fota_set_hw(ser, target, rev, log=print):
+    """Store board revision `rev` on UWB target `target` and confirm it after the target reboots.
+    True on success. A target before anc4.1.0 / tag4.2.0 ignores the request: the check fails."""
+    s = fota_query(ser, target, hw=rev)     # stores it; reboots only when it changed
+    if not s:
+        log(f"no answer from UWB id {target}")
+        return False
+    if not stores_hw(s["t_sw"]):
+        log(f"UWB id {target} runs {s['t_sw']!r}: storing the board revision needs anc4.1.0 / tag4.2.0 or later")
+        return False
+    if s["t_status"] != 0:
+        log(f"UWB id {target} could not store the board revision ({err_text(s['t_status'])})")
+        return False
+    time.sleep(HW_REBOOT_S)
+    s = fota_query(ser, target)
+    if not s or s["t_hw"] != rev:
+        got = "no answer" if not s else f"it reports {rev_name(s['t_hw'])}, firmware {s['t_sw']}"
+        log(f"UWB id {target}: board revision not confirmed ({got}); needs anc4.1.0 / tag4.2.0 or later")
+        return False
+    log(f"UWB id {target}: {rev_name(rev)} stored and in use")
+    return True
 
 
 def fota_discover(ser, timeout=6):
@@ -411,6 +521,15 @@ def cmd_fota(ser, a):
     ok = s["state_name"] == "done"
     print("FOTA OK: target rebooted with the new image, CRC verified" if ok
           else f"FOTA FAILED: {err_text(s['last_err'])}")
+    if ok and a.hw is not None and not fota_set_hw(ser, a.target, a.hw):
+        ok = False
+    if not a.stay:
+        fota_exit(ser)
+    return 0 if ok else 1
+
+
+def cmd_fota_hw(ser, a):
+    ok = fota_set_hw(ser, a.target, a.rev)
     if not a.stay:
         fota_exit(ser)
     return 0 if ok else 1
@@ -477,12 +596,22 @@ def main():
     f = sub.add_parser("flash", help="flash over the UART bootloader")
     f.add_argument("bin")
     f.add_argument("-y", "--yes", action="store_true")
+    f.add_argument("--hw", type=parse_rev, help="board revision to store once the new firmware runs (C, C2, D, 0-7)")
     fo = sub.add_parser("fota", help="use the board on --port as FOTA flasher")
     fo.add_argument("target", type=int, help="target UWB id (Status self_id)")
     fo.add_argument("bin")
     fo.add_argument("--rate", choices=RATES, default="6m8", help="starting data rate; steps down on link loss")
     fo.add_argument("--kind", choices=("anchor", "tag"))
+    fo.add_argument("--hw", type=parse_rev, help="board revision to store on the target afterwards (C, C2, D, 0-7)")
     fo.add_argument("--stay", action="store_true", help="stay in FOTA flasher mode afterwards")
+    fh = sub.add_parser("fota-hw", help="store the board revision of a UWB target (anc4.1.0 / tag4.2.0+)")
+    fh.add_argument("target", type=int, help="target UWB id (Status self_id)")
+    fh.add_argument("rev", type=parse_rev, help="C, C2, D or 0-7")
+    fh.add_argument("--stay", action="store_true", help="stay in FOTA flasher mode afterwards")
+    hw = sub.add_parser("hw", help="read or store the board revision of the board on --port (anc4.1.0 / tag4.2.0+)")
+    hwg = hw.add_mutually_exclusive_group()
+    hwg.add_argument("--set", type=parse_rev, metavar="REV", help="C, C2, D or 0-7")
+    hwg.add_argument("--clear", action="store_true", help="forget the stored revision: the strap pins decide")
     q = sub.add_parser("query", help="ask a UWB target for its version and CRC")
     q.add_argument("target", type=int)
     q.add_argument("--stay", action="store_true")
@@ -505,12 +634,15 @@ def main():
         for img, kind, ver in ((b"x\0anc4.0.0\0", 0, "anc4.0.0"), (b"tag3.3.1\0", 1, "tag3.3.1"),
                                (b"sC3.0.40\0", 0, "sC3.0.40"), (b"anc4.\0", None, "?")):
             assert image_kind(img) == kind and image_version(img) == ver, img
+        assert [parse_rev(x) for x in ("C", "c2", "D", "5")] == [0, 1, 2, 5]
+        assert stores_hw("tag4.2.0") and stores_hw("anc4.1.0") and stores_hw("anc10.0.0")
+        assert not stores_hw("tag4.1.1") and not stores_hw("anc4.0.2") and not stores_hw("sC3.0.67")
         print("ok")
         return 0
     cmds = {"status": cmd_status, "flash": cmd_flash, "fota": cmd_fota, "query": cmd_query,
             "fota-exit": cmd_fota_exit,
             "discover": cmd_discover, "led-test": cmd_led_test,
-            "antenna-delay": cmd_antenna_delay, "wake": cmd_wake}
+            "antenna-delay": cmd_antenna_delay, "wake": cmd_wake, "hw": cmd_hw, "fota-hw": cmd_fota_hw}
     with serial.Serial(a.port, BAUD, timeout=0.05) as ser:
         try:
             return cmds[a.cmd](ser, a)

@@ -31,6 +31,7 @@ import htn_fw
 
 MIN_BATTERY = 30        # % for boards with a battery gauge; 255 = no gauge (USB/externally powered)
 KIND_NAME = {0: "anchor", 1: "tag"}
+HW_CHOICES = {"Rev C": 0, "Rev C2": 1, "Rev D": 2}     # #21: stated by whoever flashes, stored on the target
 RATE_NAMES = {"Auto: 6.8 Mbps, slower if the link drops": "6m8",
               "Auto from 850 kbps": "850k",
               "110 kbps only (longest range)": "110k"}
@@ -87,6 +88,7 @@ class Wizard(tk.Tk):
         self.loader = None          # probe() dict of the FOTA loader board
         self.release = None         # dict with kind/version/path/crc/size
         self.target = None          # fota status dict from the query
+        self.hw_rev = None          # board revision of the target, as printed on the board (#21)
         self.step = 0
 
         style = ttk.Style(self)
@@ -206,13 +208,15 @@ class Wizard(tk.Tk):
         if self.target:
             lines.append(f"Target: {KIND_NAME.get(self.target['t_kind'], '?')} {self.target_id} "
                          f"({self.target['t_sw']})")
+        if self.hw_rev is not None:
+            lines.append(f"Board revision: {htn_fw.rev_name(self.hw_rev)}")
         self.summary.configure(text="\n".join(lines))
 
     def update_nav(self):
         ok = {0: self.loader is not None and self.loader.get("fota"),
               1: self.loader is not None and self.loader.get("fota_mode"),
               2: self.release is not None,
-              3: self.target is not None,
+              3: self.target is not None and self.hw_rev is not None,
               4: False}[self.step]
         self.next_btn.configure(state="normal" if ok and not self.busy else "disabled")
         self.back_btn.configure(state="normal" if self.step > 0 and not self.busy else "disabled")
@@ -478,6 +482,15 @@ class Wizard(tk.Tk):
         ttk.Label(row2, text="Data rate:").pack(side="left")
         self.rate = tk.StringVar(value=next(iter(RATE_NAMES)))
         ttk.Combobox(row2, textvariable=self.rate, values=list(RATE_NAMES), state="readonly", width=40).pack(side="left", padx=6)
+        row3 = ttk.Frame(self.body)
+        row3.pack(fill="x", pady=4)
+        ttk.Label(row3, text="Board revision (as printed on the target board):").pack(side="left")
+        self.hw_choice = tk.StringVar(value="")
+        self.hw_rev = None
+        hw_box = ttk.Combobox(row3, textvariable=self.hw_choice, values=list(HW_CHOICES), state="readonly", width=10)
+        hw_box.pack(side="left", padx=6)
+        hw_box.bind("<<ComboboxSelected>>", self.on_pick_hw)
+        ttk.Label(row3, text="required: it is stored on the target, whatever its strap pins read").pack(side="left")
         self.tinfo = ttk.Label(self.body, text="", justify="left", font=("TkFixedFont", 10))
         self.tinfo.pack(anchor="w", pady=6)
         self.found = {}
@@ -531,6 +544,13 @@ class Wizard(tk.Tk):
                 self.tgt_tree.selection_set(same_kind[0])
         self.run(job, done)
 
+    def on_pick_hw(self, _e=None):
+        self.hw_rev = HW_CHOICES.get(self.hw_choice.get())
+        if self.target and self.hw_rev is not None and self.target["t_hw"] != self.hw_rev:
+            self.log(f"target {self.target_id} runs as {htn_fw.rev_name(self.target['t_hw'])} now; the update stores "
+                     f"{htn_fw.rev_name(self.hw_rev)}", "warn")
+        self.update_nav()
+
     def on_pick_target(self, _e=None):
         sel = self.tgt_tree.selection()
         if sel:
@@ -581,7 +601,7 @@ class Wizard(tk.Tk):
             self.log(f"target {kind} {tid}: {s['t_sw']}, battery {batt}", "ok")
             self.target_id = tid
             self.target = s
-            self.update_nav()
+            self.on_pick_hw()
         self.run(job, done)
 
     # ---------------- step 5 ----------------
@@ -590,7 +610,9 @@ class Wizard(tk.Tk):
         self.clear_body("Flash and verify",
                         f"Send {r['version']} ({r['size']} B) to {KIND_NAME.get(s['t_kind'])} {self.target_id} "
                         f"(now {s['t_sw']}). The target keeps running its current firmware until the whole image "
-                        "has arrived and its CRC matches; then it writes flash, reboots, and the loader checks it.")
+                        "has arrived and its CRC matches; then it writes flash, reboots, and the loader checks it. "
+                        f"Then the loader stores {htn_fw.rev_name(self.hw_rev)} on the target and checks that it "
+                        "runs on it (needs anc4.1.0 / tag4.2.0 or later).")
         row = ttk.Frame(self.body)
         row.pack(fill="x", pady=6)
         self.start_btn = ttk.Button(row, text="Start update", style="Big.TButton", command=self.start_flash)
@@ -601,7 +623,7 @@ class Wizard(tk.Tk):
         self.result.pack(anchor="w", pady=12)
 
     def start_flash(self):
-        port, tid = self.loader["port"], self.target_id
+        port, tid, rev = self.loader["port"], self.target_id, self.hw_rev
         img = self.release["path"].read_bytes()
         kind = 0 if self.release["kind"] == "anchor" else 1
         rate = htn_fw.RATES[RATE_NAMES[self.rate.get()]] if hasattr(self, "rate") else 2
@@ -633,14 +655,22 @@ class Wizard(tk.Tk):
                     elif state in phase_pct:
                         self.progress(phase_pct[state], state)
                 s = htn_fw.fota_run(ser, on_status)
+                if s["state_name"] == "done":
+                    self.progress(97, f"storing {htn_fw.rev_name(rev)}...")
+                    s["hw_ok"] = htn_fw.fota_set_hw(ser, tid, rev, log=self.log)
             s["took"] = time.monotonic() - t0
             return s
 
         def done(s):
-            if s["state_name"] == "done":
+            if s["state_name"] == "done" and not s.get("hw_ok"):
+                self.progress(0, "revision not stored")
+                self.log(f"target {tid} runs {s['t_sw']} (CRC verified), but {htn_fw.rev_name(rev)} is NOT stored: "
+                         "it runs on what its strap pins read. Retry from 'Find the target'.", "err")
+                self.result.configure(text="Firmware OK, board revision NOT stored", foreground="#c62828")
+            elif s["state_name"] == "done":
                 self.progress(100, "done")
-                msg = (f"Verified: target {tid} runs {s['t_sw']} (CRC 0x{s['t_app_crc']:08x}), "
-                       f"{s['retries']} frames resent, {s['took']:.0f} s")
+                msg = (f"Verified: target {tid} runs {s['t_sw']} (CRC 0x{s['t_app_crc']:08x}) as "
+                       f"{htn_fw.rev_name(rev)}, {s['retries']} frames resent, {s['took']:.0f} s")
                 self.log(msg, "ok")
                 self.result.configure(text="Update OK", foreground="#2e7d32")
             else:

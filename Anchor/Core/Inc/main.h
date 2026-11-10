@@ -168,9 +168,11 @@ extern "C" {
  * anc4.0.0	BMI088 IMU read out: opcode 26 READ_IMU returns one raw acc/gyr/temp sample; IMU INT pins PA1/PA2 are inputs (were outputs driven low against the BMI088 push-pull INT)
  * anc4.0.1	#15: range profile is station state; no valid range 1 s -> profile 0
  * anc4.0.2	FOTA: fota_port_target_answered() hook (empty: anchors never sleep); same FOTA target code as tag4.1.1
+ * anc4.1.0	#21: board revision stored in the self-id page (slot 4) wins over the strap pins; set with UART opcode 27
+ *				or over UWB (FOTA query with a revision); SET_ID keeps it
  */
 
-#define VERSION "anc4.0.2"
+#define VERSION "anc4.1.0"
 
 
 #define IS_TAG false
@@ -465,6 +467,11 @@ enum {
     VER_R1,
     VER_R2,
 };
+
+/* Board revision (#21): stated when the board is flashed and stored in the self-id page, slot 4; it
+ * wins over the strap pins, which read Rev C when a Rev D strap is open. 0xFFFF = none stored. */
+#define SELF_ID_SLOT_HW     4
+#define HW_REV_MAX          7       // 0 = Rev C, 1 = Rev C2, 2 = Rev D
 
 void main_init();
 void write_clear_bkup_sram(void);

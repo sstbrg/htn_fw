@@ -13,6 +13,8 @@
 #include "i2c.h"
 extern "C" {
 #include "rrc2040driver.h"	// C header without its own extern "C"
+#include "flash_handler.h"
+#include <string.h>
 }
 
 extern uint8_t HW_Version;
@@ -76,4 +78,17 @@ extern "C" void fota_port_kick_wd(void)
 extern "C" void fota_port_target_answered(void)
 {
 	// anchors never sleep
+}
+
+extern "C" int fota_port_hw_store(uint8_t rev)
+{
+	uint16_t page[8];
+	memcpy(page, (const void*)FLASH_SELF_ID_ADDRESS, sizeof(page));
+	if (page[SELF_ID_SLOT_HW] == rev)
+		return 0;
+	page[SELF_ID_SLOT_HW] = rev;
+	if (Flash_Erase(FLASH_SELF_ID_USER_BANK, FLASH_SELF_ID_PAGE) != HAL_OK
+			|| Flash_Write(FLASH_SELF_ID_ADDRESS, (uint64_t*)page, 1) != HAL_OK)
+		return -1;
+	return 1;
 }

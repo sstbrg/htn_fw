@@ -69,6 +69,7 @@ static struct {
 	uint8_t t_valid;
 	uint16_t target;
 	uint16_t query_target;
+	uint8_t query_hw;		// board revision the query sets (#21), 0xFF = none
 	uint16_t session;
 	uint16_t countdown_ms;
 	uint32_t size;
@@ -331,16 +332,23 @@ void fota_uwb_rx(uint32_t frame_len)
 		return;
 	}
 	if (h->des != fota_port_self_addr() || h->type != FOTA_HELLO
-			|| frame_len - 2 < sizeof(fota_hdr_t) + sizeof(fota_hello_t))
+			|| frame_len - 2 < sizeof(fota_hdr_t) + FOTA_HELLO_MIN_LEN)
 		return;
 	fota_hello_t hello;
-	memcpy(&hello, rxf + sizeof(fota_hdr_t), sizeof(hello));
+	uint32_t hello_len = frame_len - 2 - sizeof(fota_hdr_t);
+	memset(&hello, 0xFF, sizeof(hello));
+	memcpy(&hello, rxf + sizeof(fota_hdr_t), hello_len < sizeof(hello) ? hello_len : sizeof(hello));
 	uint16_t src = h->src;
 	uint16_t session = h->session;
 	uint32_t now = HAL_GetTick();
 
 	if (hello.flags & FOTA_HELLO_QUERY) {
-		target_reply_hello(src, session, FOTA_OK, 0);
+		int stored = 0;
+		if ((hello.flags & FOTA_HELLO_SET_HW) && hello.hw <= FOTA_HW_MAX)
+			stored = fota_port_hw_store(hello.hw);
+		target_reply_hello(src, session, stored < 0 ? FOTA_ERR_STATE : FOTA_OK, 0);
+		if (stored > 0)
+			NVIC_SystemReset();		// UART, LEDs and radio drive are set up for the revision at power-up
 		return;
 	}
 	uint8_t status = FOTA_OK;
@@ -488,6 +496,7 @@ static void flasher_hello(uint16_t target, uint8_t flags)
 	p->kind = fl.kind;
 	p->rate = fl.rate;
 	p->flags = flags;
+	p->hw = (flags & FOTA_HELLO_SET_HW) ? fl.query_hw : 0xFF;
 	uwb_send(sizeof(fota_hdr_t) + sizeof(*p), 1);
 	int n = uwb_wait_rx(FOTA_HELLO_WAIT_MS);
 	const fota_hello_ack_t *a = (const fota_hello_ack_t *)rx_payload(n, FOTA_HELLO_ACK, fl.session, sizeof(fota_hello_ack_t));
@@ -647,7 +656,7 @@ static void flasher_step(void)
 
 	case FL_QUERY:
 		fl.t_valid = 0;
-		flasher_hello(fl.query_target, FOTA_HELLO_QUERY);
+		flasher_hello(fl.query_target, FOTA_HELLO_QUERY | (fl.query_hw <= FOTA_HW_MAX ? FOTA_HELLO_SET_HW : 0));
 		if (fl.t_valid || in_state > FOTA_QUERY_TIMEOUT_MS) {
 			fl.state = fl.query_target == fl.target && fl.loaded == fl.size && fl.size ? FL_LOADED : FL_IDLE;
 			fl.t_state = now;
@@ -909,6 +918,11 @@ int fota_uart_command(const uint8_t *msg, uint8_t len)
 			break;
 		}
 		memcpy(&fl.query_target, p, 2);
+		fl.query_hw = (plen >= 3) ? p[2] : 0xFF;
+		if (fl.query_hw > FOTA_HW_MAX && fl.query_hw != 0xFF) {
+			uart_status(op, FOTA_ERR_STATE);
+			break;
+		}
 		fl.session = (uint16_t)(now ^ 0x5A5Au) | 1u;
 		fl.t_valid = 0;
 		flasher_set(FL_QUERY);
